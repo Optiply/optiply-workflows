@@ -220,7 +220,9 @@ const authSchema = z
         scope: z.string().default(''),
         /** Extra parameters for the consent screen (`access_type=offline`, `prompt=consent`, …). */
         authorizeParams: keyValues,
-        clientAuth: z.enum(['body', 'basic']).default('body'),
+        /** How the app proves itself: its secret in the form or a Basic header; `none` for a public app (PKCE), which
+         * never sends a secret, even one still stored from other settings. */
+        clientAuth: z.enum(['body', 'basic', 'none']).default('body'),
         pkce: z.boolean().default(true),
         /** One connected account per environment, or each person connects their own. */
         tokens: z.enum(['shared', 'perUser']).default('shared'),

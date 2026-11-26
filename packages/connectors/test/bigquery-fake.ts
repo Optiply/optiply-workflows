@@ -56,6 +56,22 @@ export class FakeBigQuery {
     this.validTokens.add(value)
   }
 
+  /** STS: the identity pool audience it accepts, the Optiply tokens it exchanges, and what it issued. */
+  readonly stsAudience =
+    '//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/pool/providers/auth0'
+  private readonly optiplyTokens = new Set<string>()
+  stsIssued = 0
+  /** The next STS exchange is refused (e.g. an Optiply token Auth0 has revoked), once. */
+  refuseNextExchange = false
+  /** The next STS exchanges answer this instead (a wrong audience, a busy or failing STS), `times` times. */
+  failExchange: { status: number; body: unknown; times: number } | null = null
+  /** How long STS takes to answer (to have exchanges overlap). */
+  exchangeDelayMs = 0
+  /** An Optiply (Auth0) token STS exchanges for a Google token. */
+  allowOptiplyToken(value: string): void {
+    this.optiplyTokens.add(value)
+  }
+
   constructor() {
     const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
     this.publicKey = publicKey.export({ type: 'spki', format: 'pem' }).toString()
@@ -72,7 +88,12 @@ export class FakeBigQuery {
 
   get endpoints() {
     const base = `http://127.0.0.1:${(this.server!.address() as AddressInfo).port}`
-    return { apiUrl: `${base}/bigquery/v2`, tokenUrl: `${base}/token` }
+    return {
+      apiUrl: `${base}/bigquery/v2`,
+      tokenUrl: `${base}/token`,
+      stsUrl: `${base}/sts/v1/token`,
+      stsAudience: this.stsAudience,
+    }
   }
 
   script(match: string | RegExp, job: FakeJob): void {
@@ -83,7 +104,7 @@ export class FakeBigQuery {
   /** Requests to the API (not the token endpoint). */
   apiCalls(kind?: 'insert' | 'results' | 'cancel' | 'dryRun'): Recorded[] {
     return this.requests.filter((r) => {
-      if (r.path === '/token') return false
+      if (r.path === '/token' || r.path === '/sts/v1/token') return false
       if (!kind) return true
       if (kind === 'insert') return r.method === 'POST' && r.path.endsWith('/jobs')
       if (kind === 'results') return r.method === 'GET' && r.path.includes('/queries/')
@@ -133,6 +154,10 @@ export class FakeBigQuery {
     })
 
     if (url.pathname === '/token') return this.token(body as Record<string, string>)
+    if (url.pathname === '/sts/v1/token') {
+      if (this.exchangeDelayMs) await new Promise((r) => setTimeout(r, this.exchangeDelayMs))
+      return this.exchange(body as Record<string, string>)
+    }
 
     const token = req.headers.authorization?.replace(/^Bearer /, '')
     if (!token || !this.validTokens.has(token) || this.rejectNextToken) {
@@ -164,6 +189,37 @@ export class FakeBigQuery {
       return { status: 200, body: { kind: 'bigquery#jobCancelResponse' } }
     }
     return this.results(job, url.searchParams)
+  }
+
+  /** Requests to STS. */
+  stsCalls(): Recorded[] {
+    return this.requests.filter((r) => r.path === '/sts/v1/token')
+  }
+
+  // As Google STS answers: an OAuth error object on refusal, a Google access token on success.
+  private exchange(form: Record<string, string>): { status: number; body: unknown } {
+    if (
+      form.grant_type !== 'urn:ietf:params:oauth:grant-type:token-exchange' ||
+      form.requested_token_type !== 'urn:ietf:params:oauth:token-type:access_token' ||
+      form.subject_token_type !== 'urn:ietf:params:oauth:token-type:jwt' ||
+      form.scope !== 'https://www.googleapis.com/auth/cloud-platform'
+    ) {
+      return { status: 400, body: { error: 'invalid_request', error_description: 'Bad exchange' } }
+    }
+    if (this.failExchange && this.failExchange.times > 0) {
+      this.failExchange.times--
+      return { status: this.failExchange.status, body: this.failExchange.body }
+    }
+    if (form.audience !== this.stsAudience) {
+      return { status: 400, body: { error: 'invalid_target', error_description: 'Unknown audience' } }
+    }
+    if (this.refuseNextExchange || !this.optiplyTokens.has(form.subject_token ?? '')) {
+      this.refuseNextExchange = false
+      return { status: 400, body: { error: 'invalid_grant', error_description: 'The token is invalid' } }
+    }
+    const value = `fed-${++this.stsIssued}`
+    this.validTokens.add(value)
+    return { status: 200, body: { access_token: value, expires_in: 3599, token_type: 'Bearer' } }
   }
 
   private token(form: Record<string, string>): { status: number; body: unknown } {

@@ -524,8 +524,9 @@ export function TeamsFields(props: FieldsProps & { resourceId: string }) {
 }
 
 /**
- * How a BigQuery resource signs in: a service account key (every query runs as that account), or a Google account
- * through OAuth sign-in, one shared per environment or each person's own (queries run with that person's access).
+ * How a BigQuery resource signs in: a service account key (every query runs as that account), a Google account
+ * through OAuth sign-in, one shared per environment or each person's own (queries run with that person's access), or
+ * each person's own Optiply account, exchanged at Google STS for the Optiply data platform.
  */
 export function BigQuerySignIn(props: FieldsProps & { resourceId: string }) {
   const auth = (props.config.auth ?? { type: 'serviceAccount' }) as Auth
@@ -540,9 +541,12 @@ export function BigQuerySignIn(props: FieldsProps & { resourceId: string }) {
         >
           <option value="serviceAccount">A service account key</option>
           <option value="oauth">OAuth sign-in (a Google account)</option>
+          <option value="optiply">Each person's Optiply account (the Optiply data platform)</option>
         </Select>
       </Field>
-      {auth.type === 'oauth' ? (
+      {auth.type === 'optiply' ? (
+        <OptiplyDataPlatformSignIn props={props} resourceId={props.resourceId} />
+      ) : auth.type === 'oauth' ? (
         <>
           <OAuthApp
             props={props}
@@ -570,6 +574,112 @@ export function BigQuerySignIn(props: FieldsProps & { resourceId: string }) {
         />
       )}
     </>
+  )
+}
+
+/** The defaults the connector applies (packages/connectors/src/bigquery.ts), shown until changed. */
+const OPTIPLY_SIGN_IN = {
+  audience: 'https://api.optiply.com/internal',
+  scope: 'openid email offline_access',
+} as const
+
+/** Optiply's Auth0 sign-in domains, the only ones the connector accepts (packages/connectors/src/bigquery.ts). */
+const OPTIPLY_LOGINS = [
+  { url: 'https://login.optiply.com/', label: 'login.optiply.com (production)' },
+  { url: 'https://optiply.eu.auth0.com/', label: 'optiply.eu.auth0.com (production, by its Auth0 name)' },
+  { url: 'https://optiply-staging.eu.auth0.com/', label: 'optiply-staging.eu.auth0.com (staging)' },
+] as const
+
+/** The choice a saved sign-in domain is (by host; the default when none is saved). */
+function loginChoice(saved: string | undefined): string {
+  if (!saved) return OPTIPLY_LOGINS[0].url
+  try {
+    const host = new URL(saved).host
+    return OPTIPLY_LOGINS.find((l) => new URL(l.url).host === host)?.url ?? OPTIPLY_LOGINS[0].url
+  } catch {
+    return OPTIPLY_LOGINS[0].url
+  }
+}
+
+/**
+ * Optiply sign-in for BigQuery: each person signs in to Optiply (Auth0) with the app below; their token is exchanged at
+ * Google STS for a Google identity of the same person, which the data platform's functions check shop membership on.
+ */
+function OptiplyDataPlatformSignIn({ props, resourceId }: { props: FieldsProps; resourceId: string }) {
+  const auth = props.config.auth as Record<string, string | undefined>
+  const setAuth = (key: string, value: string) => props.set('auth', { ...auth, [key]: value || undefined })
+  // The default shows as the placeholder: an empty field means the default (the connector applies it), so clearing
+  // the field doesn't put the default back under the cursor.
+  const text = (key: keyof typeof OPTIPLY_SIGN_IN) => ({
+    value: auth[key] ?? '',
+    placeholder: OPTIPLY_SIGN_IN[key],
+    disabled: props.disabled,
+    onChange: (e: { target: { value: string } }) => setAuth(key, e.target.value),
+  })
+  return (
+    <div className="space-y-4">
+      <Grid>
+        <Field
+          label="Client ID"
+          hint="The Optiply app people sign in with (in Optiply's Auth0; it has no secret)."
+        >
+          <Input
+            value={auth.clientId ?? ''}
+            disabled={props.disabled}
+            data-testid="oauth-client-id"
+            onChange={(e) => setAuth('clientId', e.target.value)}
+          />
+        </Field>
+        <Field label="Sign-in domain" hint="Optiply's Auth0 sign-in domain: production or staging.">
+          <Select
+            value={loginChoice(auth.loginUrl)}
+            disabled={props.disabled}
+            data-testid="optiply-login-url"
+            onChange={(e) => setAuth('loginUrl', e.target.value)}
+          >
+            {OPTIPLY_LOGINS.map((login) => (
+              <option key={login.url} value={login.url}>
+                {login.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </Grid>
+      <Grid>
+        <Field label="Audience" hint="The Optiply API the token is for; the identity pool accepts it.">
+          <Input {...text('audience')} />
+        </Field>
+        <Field
+          label="Scopes"
+          hint="Space-separated. offline_access keeps people connected; email names them."
+        >
+          <Input {...text('scope')} />
+        </Field>
+      </Grid>
+      <RedirectUri resourceId={resourceId} />
+      <div className="space-y-1 text-xs text-muted" data-testid="bigquery-optiply-note">
+        <p>
+          Each person's Optiply sign-in is exchanged at Google for their identity in the data platform's
+          identity pool (<code className="text-ink">data-platform-users</code>; fixed).
+        </p>
+        <p>
+          Each person connects their own Optiply account; queries see only the webshops they are a member of,
+          e.g.{' '}
+          <code className="text-ink">
+            SELECT * FROM `optiply-data-platform.agent_api.webshop_product`('&lt;webshop uuid&gt;')
+          </code>
+          .
+        </p>
+        <p>
+          Each person also needs the BigQuery Job User role in the project below, granted to{' '}
+          <code className="text-ink">
+            principal://iam.googleapis.com/projects/429012531216/locations/global/workloadIdentityPools/data-platform-users/subject/&lt;their
+            Optiply email&gt;
+          </code>
+          . Workflows that run on their own (schedules, webhooks) can't use it.
+        </p>
+      </div>
+    </div>
   )
 }
 

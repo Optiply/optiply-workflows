@@ -429,6 +429,19 @@ in that project and access to the datasets it queries; queries then see only wha
 job history and costs show who ran them. Workflows that run on their own (schedules, webhooks) need a resource with a
 shared account or a service account key.
 
+**BigQuery with each person's Optiply account (the Optiply data platform).** Set **Sign in with** to **Each person's
+Optiply account** and fill in the **Client ID** of the "Optiply Workflows" Auth0 app (it has no secret; its Allowed
+Callback URLs must include the **Redirect URI** the form shows). Leave the other sign-in fields as they are. Set the
+**Project** to `optiply-workflows` and the **Location** to `EU`. Everyone then clicks **Connect your account** and signs
+in with their Optiply login; queries see only the webshops that person is a member of in Optiply, for example
+``SELECT * FROM `optiply-data-platform.agent_api.webshop_product`('<webshop uuid>')``. Before someone can run queries,
+grant them **BigQuery Job User** in the project for their data-platform identity, named by their Optiply email (the
+exact command is in the connectors runbook). Workflows that run on their own (schedules, webhooks) can't use this
+resource.
+
+> **Tip:** Grant the role person by person. A grant to the whole identity pool would let any Optiply customer run
+> queries billed to the project.
+
 ### SSH tunnels
 
 A PostgreSQL, MySQL, Microsoft SQL Server, JDBC, GraphQL or REST resource can reach a database or API that isn't

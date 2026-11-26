@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { auditEvents, groups, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { decryptConfigSecrets } from '../src/services/resources'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
 const CLIENT_SECRET = 'Client-S3cret-Value-8841'
@@ -694,7 +695,12 @@ describe('BigQuery with Google OAuth sign-in', () => {
       [
         { ...base, projectId: 'optiply-dw', auth: { ...oauth, clientId: ' ' } },
         { clientSecret: CLIENT_SECRET },
-        'auth.clientId',
+        'Add the OAuth app’s client id',
+      ],
+      [
+        { ...base, projectId: 'optiply-dw', auth: { type: 'oauth', tokens: 'perUser' } },
+        { clientSecret: CLIENT_SECRET },
+        'Add the OAuth app’s client id',
       ],
       [{ ...base, projectId: 'optiply-dw', auth: oauth }, {}, 'client secret'],
       [{ ...base, auth: oauth }, { clientSecret: CLIENT_SECRET }, 'Set the project'],
@@ -726,6 +732,88 @@ describe('BigQuery with Google OAuth sign-in', () => {
     })
     // Each person connects their own: there is no shared account to connect.
     expect((await start(adminCookie, id, 'shared')).res.statusCode).toBe(400)
+  })
+
+  it("Optiply sign-in: saved without a client secret, each person goes to Optiply's Auth0 for the API audience", async () => {
+    const id = data(
+      await admin.mutate('resources.create', {
+        type: 'bigquery',
+        name: 'Data platform',
+        slug: 'data_platform',
+      }),
+    ).id as string
+    const optiply = { type: 'optiply', clientId: 'optiply-workflows-spa' }
+    for (const [config, message] of [
+      [
+        { ...base, projectId: 'optiply-workflows', auth: { ...optiply, clientId: ' ' } },
+        'Add the Optiply app’s client id',
+      ],
+      [
+        { ...base, projectId: 'optiply-workflows', auth: { type: 'optiply' } },
+        'Add the Optiply app’s client id',
+      ],
+      [{ ...base, auth: optiply }, 'Set the project'],
+      [
+        {
+          ...base,
+          projectId: 'optiply-workflows',
+          auth: { ...optiply, loginUrl: 'https://login-optiply.example/' },
+        },
+        "Use one of Optiply's sign-in domains",
+      ],
+    ] as const) {
+      const refused = await save(id, config)
+      expect(refused.status, message).toBe(400)
+      expect(refused.body.error?.message).toContain(message)
+    }
+    expect((await save(id, { ...base, projectId: 'optiply-workflows', auth: optiply })).status).toBe(200)
+    const [all] = await env.db.select().from(groups).where(eq(groups.systemKind, 'all_users'))
+    await env.db
+      .insert(permissions)
+      .values({ groupId: all!.id, objectType: 'resource', objectId: id, environmentId: prodId, level: 'use' })
+
+    const { res, location } = await start(memberCookie, id, 'mine')
+    expect(res.statusCode).toBe(302)
+    expect(location!.origin + location!.pathname).toBe('https://login.optiply.com/authorize')
+    expect(Object.fromEntries(location!.searchParams)).toMatchObject({
+      response_type: 'code',
+      client_id: 'optiply-workflows-spa',
+      redirect_uri: 'http://localhost:5173/api/oauth/callback',
+      scope: 'openid email offline_access',
+      audience: 'https://api.optiply.com/internal',
+      code_challenge_method: 'S256',
+    })
+    expect((await start(adminCookie, id, 'shared')).res.statusCode).toBe(400)
+  })
+
+  it('switching from Google OAuth to Optiply sign-in drops the stored Google client secret', async () => {
+    const id = data(
+      await admin.mutate('resources.create', { type: 'bigquery', name: 'Switched', slug: 'switched_signin' }),
+    ).id as string
+    const google = { type: 'oauth', clientId: 'bq-client.apps.googleusercontent.com', tokens: 'perUser' }
+    expect(
+      (await save(id, { ...base, projectId: 'optiply-dw', auth: google }, { clientSecret: CLIENT_SECRET }))
+        .status,
+    ).toBe(200)
+    const stored = async () => {
+      const [row] = await env.db
+        .select()
+        .from(resourceConfigs)
+        .where(and(eq(resourceConfigs.resourceId, id), eq(resourceConfigs.environmentId, prodId)))
+      return decryptConfigSecrets(env.config.keyring, row!)
+    }
+    expect(await stored()).toEqual({ clientSecret: CLIENT_SECRET })
+    // The Optiply form has no secret field: the browser sends no secrets, and the old one isn't kept.
+    expect(
+      (
+        await save(id, {
+          ...base,
+          projectId: 'optiply-workflows',
+          auth: { type: 'optiply', clientId: 'spa' },
+        })
+      ).status,
+    ).toBe(200)
+    expect(await stored()).toEqual({})
   })
 })
 

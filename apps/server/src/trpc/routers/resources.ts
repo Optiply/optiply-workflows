@@ -144,6 +144,34 @@ function secretsMissing(type: string, config: unknown): boolean {
 }
 
 /**
+ * BigQuery's Optiply sign-in signs in to a public app: a client secret kept from an earlier Google OAuth sign-in (the
+ * form has no field to clear it) is dropped on save, so it isn't stored for a sign-in that never sends it.
+ */
+function withoutUnusedClientSecret(
+  type: string,
+  config: unknown,
+  secrets: Record<string, unknown>,
+): Record<string, unknown> {
+  const auth = (config as { auth?: { type?: unknown } } | null)?.auth?.type
+  if (type !== 'bigquery' || auth !== 'optiply' || !('clientSecret' in secrets)) return secrets
+  const { clientSecret: _unused, ...rest } = secrets
+  return rest
+}
+
+/**
+ * An OAuth sign-in saved without its app's client id says so in words, rather than as a schema error
+ * ("auth.clientId: Invalid input: expected string, received undefined"). Null for any other problem.
+ */
+function missingClientId(type: string, config: unknown, issues: { path: PropertyKey[] }[]): string | null {
+  const clientId = issues.some((i) => i.path.length === 2 && i.path[0] === 'auth' && i.path[1] === 'clientId')
+  if (!clientId) return null
+  // Named as each form labels the field.
+  if (type === 'salesforce') return 'Add the connected app’s consumer key'
+  const auth = (config as { auth?: { type?: unknown } } | null)?.auth?.type
+  return auth === 'optiply' ? 'Add the Optiply app’s client id' : 'Add the OAuth app’s client id'
+}
+
+/**
  * Why a resource's settings couldn't sign in, checked on save (M26, M27): an AWS identity (S3), a service's token
  * or OAuth client secret, Google Sheets' key or the server's identity. Null when fine, or for other types.
  */
@@ -627,7 +655,11 @@ export const resourcesRouter = router({
       const envSlug = await environmentSlug(ctx.db, input.environmentId)
 
       const config = connector.configSchema.safeParse(input.config)
-      if (!config.success) throw invalidInput('configuration', config.error.issues)
+      if (!config.success) {
+        const missing = missingClientId(resource.type, input.config, config.error.issues)
+        if (missing) throw new TRPCError({ code: 'BAD_REQUEST', message: missing })
+        throw invalidInput('configuration', config.error.issues)
+      }
 
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
       // A protected resource's settings are Git's (M22): here only its secrets change (and overrides, apart).
@@ -658,7 +690,7 @@ export const resourcesRouter = router({
         existing?.config,
         settled.config,
       )
-      const secrets = settled.secrets
+      const secrets = withoutUnusedClientSecret(resource.type, settled.config, settled.secrets)
       // Checked as it will run: with this instance's overrides (M22), e.g. a BigQuery project set only here.
       const problem = settingsProblem(
         resource.type,
