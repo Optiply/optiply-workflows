@@ -1587,8 +1587,18 @@ through the data platform's pool `data-platform-users` (project number 429012531
   commit each. The one "needs check" (grants by the email claim) was settled by the data team and the Auth0 admin:
   the claim comes only from verified, unique emails.
 - **Not done:** the agent's shop-pinning SQL guard (people write their own queries and may read any of their own
-  shops; the functions' membership check is the boundary); the Tables panel (it lists `INFORMATION_SCHEMA.COLUMNS`,
-  where table functions don't appear); grants by group (federated principals are per subject).
+  shops; the functions' membership check is the boundary); grants by group (federated principals are per subject).
+- **Tables panel (session 62, later; branch `feat/bigquery-data-platform-tables`):** with this sign-in the panel listed
+  `region-eu.INFORMATION_SCHEMA.COLUMNS` in the billing project and failed (the identity may only run jobs there; the
+  data platform has functions, not tables). Now a connector hook, `schemaRows(client, ctx)` (`types.ts`; used by
+  `describeSqlSchema` through `runOperation` before `schemaSql`), lets BigQuery's Optiply sign-in list the
+  `optiply-data-platform.agent_api` table functions: the routines API (list, paged; then `routines.get` each),
+  columns from `returnTableType` or else a dry run (`jobs.insert`, `dryRun`, typed `CAST(NULL AS …)` arguments; free,
+  no job), 8 at a time, legacy type names as standard SQL's (`INTEGER` → `INT64`); a function that can't be described
+  is listed without columns. Each table may carry `insert` (row `i`): the panel and completions show the name and
+  insert the call, `` `optiply-data-platform.agent_api.webshop_product`('<shop>') `` (`sqlTableName`/`sqlTableLabel`
+  in `apps/web/src/lib/sql-schema.ts`). **Live, by hand before the PR:** 64 functions, 1,132 columns, none without,
+  5.5 s (the server allows 60 s; cached 10 minutes per person).
 - **Tests:** connectors `bigquery.test.ts` "Optiply sign-in" (14, against a fake STS in `bigquery-fake.ts`) and
   `oauth.test.ts` (a `none` app sends no secret); server `oauth-connect.test.ts` (the save check, no secret, a stale
   secret dropped, a look-alike domain refused, the redirect to `login.optiply.com/authorize` with the audience) and

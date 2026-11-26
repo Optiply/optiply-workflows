@@ -271,7 +271,9 @@ BigQuery is a database resource (not HTTP through the core above), but it can si
   account without the role → BigQuery's own `accessDenied` ("User does not have bigquery.jobs.create permission …");
   a token BigQuery refuses is refreshed once; when Google refuses the refresh (access revoked, password changed),
   the account shows **Needs reconnecting**.
-- The table list (the SQL editor's Tables panel) is read as the person who opens it, and cached per person.
+- The table list (the SQL editor's Tables panel) is read as the person who opens it, and cached per person. With
+  Optiply sign-in it lists the data platform's `agent_api` table functions and the columns each returns (the routines
+  API, then a free dry run per function; a few seconds the first time); clicking one inserts its call.
 
 ## Testing against fakes
 
