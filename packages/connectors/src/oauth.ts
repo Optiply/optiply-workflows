@@ -15,7 +15,7 @@ export interface AuthorizationCodeSettings {
   clientId: string
   scope: string
   authorizeParams: { key: string; value: string }[]
-  clientAuth: 'body' | 'basic'
+  clientAuth: 'body' | 'basic' | 'none'
   pkce: boolean
 }
 
@@ -169,9 +169,16 @@ function sharedAgent(allowPrivateNetwork: boolean): Agent {
   return guardedAgent
 }
 
-type OAuthClient = { clientId: string; clientSecret: string | undefined; clientAuth: 'body' | 'basic' }
+type OAuthClient = {
+  clientId: string
+  clientSecret: string | undefined
+  clientAuth: 'body' | 'basic' | 'none'
+}
 
-/** A form post's headers, with the client's credentials in a Basic header or in the form. */
+/**
+ * A form post's headers, with the client's credentials in a Basic header or in the form. A public app (`none`) sends
+ * only its client id: a secret stored from other settings (another sign-in type) never reaches its provider.
+ */
 function clientRequest(form: URLSearchParams, client: OAuthClient): Headers {
   const headers = new Headers({
     'content-type': 'application/x-www-form-urlencoded',
@@ -182,7 +189,9 @@ function clientRequest(form: URLSearchParams, client: OAuthClient): Headers {
     headers.set('authorization', `Basic ${Buffer.from(credentials).toString('base64')}`)
   } else {
     form.set('client_id', client.clientId)
-    if (client.clientSecret !== undefined) form.set('client_secret', client.clientSecret)
+    if (client.clientSecret !== undefined && client.clientAuth !== 'none') {
+      form.set('client_secret', client.clientSecret)
+    }
   }
   return headers
 }

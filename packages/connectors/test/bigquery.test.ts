@@ -702,6 +702,7 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
         clientId: 'spa-client',
         scope: 'openid email offline_access',
         authorizeParams: [{ key: 'audience', value: 'https://api.optiply.com/internal' }],
+        clientAuth: 'none',
         pkce: true,
         tokens: 'perUser',
       },

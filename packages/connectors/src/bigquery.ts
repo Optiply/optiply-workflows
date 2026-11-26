@@ -296,7 +296,8 @@ function bigQueryHttpConfig(config: Config, endpoints: BigQueryEndpoints): RestC
         clientId: auth.clientId,
         scope: auth.scope,
         authorizeParams: [{ key: 'audience', value: auth.audience }],
-        clientAuth: 'body',
+        // A public Auth0 app: no secret is ever sent, not even one stored from a Google OAuth sign-in before.
+        clientAuth: 'none',
         pkce: true,
         tokens: 'perUser',
       },

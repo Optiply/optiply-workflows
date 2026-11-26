@@ -144,6 +144,21 @@ function secretsMissing(type: string, config: unknown): boolean {
 }
 
 /**
+ * BigQuery's Optiply sign-in signs in to a public app: a client secret kept from an earlier Google OAuth sign-in (the
+ * form has no field to clear it) is dropped on save, so it isn't stored for a sign-in that never sends it.
+ */
+function withoutUnusedClientSecret(
+  type: string,
+  config: unknown,
+  secrets: Record<string, unknown>,
+): Record<string, unknown> {
+  const auth = (config as { auth?: { type?: unknown } } | null)?.auth?.type
+  if (type !== 'bigquery' || auth !== 'optiply' || !('clientSecret' in secrets)) return secrets
+  const { clientSecret: _unused, ...rest } = secrets
+  return rest
+}
+
+/**
  * An OAuth sign-in saved without its app's client id says so in words, rather than as a schema error
  * ("auth.clientId: Invalid input: expected string, received undefined"). Null for any other problem.
  */
@@ -673,7 +688,7 @@ export const resourcesRouter = router({
         existing?.config,
         settled.config,
       )
-      const secrets = settled.secrets
+      const secrets = withoutUnusedClientSecret(resource.type, settled.config, settled.secrets)
       // Checked as it will run: with this instance's overrides (M22), e.g. a BigQuery project set only here.
       const problem = settingsProblem(
         resource.type,

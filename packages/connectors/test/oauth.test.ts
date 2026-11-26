@@ -187,6 +187,20 @@ describe('exchanging the code', () => {
     expect(requests[1]!.form.has('client_secret')).toBe(false)
   })
 
+  it('sends a public app’s client id only, even when a secret is stored (clientAuth none)', async () => {
+    const pub = settings({ clientAuth: 'none', revokeUrl: `${origin}/revoke` })
+    await exchangeCode(pub, 'GOCSPX-stale', { code: 'c', redirectUri: 'r' }, opts())
+    await refreshAccessToken(pub, 'GOCSPX-stale', 'rt-1', opts())
+    answer = (_req, res) => json(res, 200, {})
+    await revokeToken(pub, 'GOCSPX-stale', { value: 'rt-1', type: 'refresh_token' }, opts())
+    expect(requests).toHaveLength(3)
+    for (const r of requests) {
+      expect(r.form.get('client_id')).toBe('client id')
+      expect(r.form.has('client_secret')).toBe(false)
+      expect(r.headers.authorization).toBeUndefined()
+    }
+  })
+
   it('has no expiry when the provider gives none, and reads form-encoded answers', async () => {
     answer = (_req, res) => {
       res.writeHead(200, { 'content-type': 'application/x-www-form-urlencoded' })
