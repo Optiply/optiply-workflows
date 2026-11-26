@@ -1594,10 +1594,18 @@ through the data platform's pool `data-platform-users` (project number 429012531
   `describeSqlSchema` through `runOperation` before `schemaSql`), lets BigQuery's Optiply sign-in list the
   `optiply-data-platform.agent_api` table functions: the routines API (list, paged; then `routines.get` each),
   columns from `returnTableType` or else a dry run (`jobs.insert`, `dryRun`, typed `CAST(NULL AS …)` arguments; free,
-  no job), 8 at a time, legacy type names as standard SQL's (`INTEGER` → `INT64`); a function that can't be described
-  is listed without columns. Each table may carry `insert` (row `i`): the panel and completions show the name and
+  no job), 8 at a time, legacy type names as standard SQL's (`INTEGER` → `INT64`). A function BigQuery refuses to read
+  or plan (400/403/404 that isn't a rate or quota limit: `cannotPlan`) is listed without columns but with its
+  arguments; anything a retry or a new sign-in could fix (429, 5xx, network, a 401 or `auth_required`) fails the whole
+  list, so it isn't cached and its error shows. Each table may carry `insert` (row `i`): the panel and completions show the name and
   insert the call, `` `optiply-data-platform.agent_api.webshop_product`('<shop>') `` (`sqlTableName`/`sqlTableLabel`
-  in `apps/web/src/lib/sql-schema.ts`). **Live, by hand before the PR:** 64 functions, 1,132 columns, none without,
+  in `apps/web/src/lib/sql-schema.ts`). Completions: an alias after a call (`` `…webshop_product`('1') p ``, then
+  `p.`) offers its columns (`referencedTables`, moved to the pure `components/code/sql-references.ts`); `agent_api.`
+  or `` `optiply-data-platform.agent_api. `` offers the functions and replaces what was typed with the full call
+  (`tablesInSchema`: a schema matched whole or by its last part). Reviewed before the PR: security-auditor nothing;
+  bug-hunter 2 Medium (arguments lost after a failed dry run; no alias after a call) and 3 Low (`agent_api.`; transient
+  errors cached as "no columns"; the fake's `data_freshness` without `shop`), all fixed, a commit each.
+  **Live, by hand before the PR:** 64 functions, 1,132 columns, none without,
   5.5 s (the server allows 60 s; cached 10 minutes per person).
 - **Tests:** connectors `bigquery.test.ts` "Optiply sign-in" (14, against a fake STS in `bigquery-fake.ts`) and
   `oauth.test.ts` (a `none` app sends no secret); server `oauth-connect.test.ts` (the save check, no secret, a stale
