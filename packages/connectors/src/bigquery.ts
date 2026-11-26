@@ -750,9 +750,31 @@ async function describeFunction(
       columns: fields.map((f) => ({ name: f.name, type: fieldTypeName(f), nullable: f.mode !== 'REQUIRED' })),
     }
   } catch (err) {
-    if (signal.aborted) throw err
+    // Only "this function can't be planned" lists it without columns; anything a retry or a new sign-in could fix
+    // fails the whole list, so it isn't kept (the server caches a list 10 minutes) and its error is shown.
+    if (signal.aborted || !cannotPlan(err)) throw err
     return { name, args, columns: [] }
   }
+}
+
+/** Reasons BigQuery gives for being busy or failing, never about the function itself. */
+const TRANSIENT_REASONS = new Set([
+  'rateLimitExceeded',
+  'userRateLimitExceeded',
+  'quotaExceeded',
+  'backendError',
+  'internalError',
+])
+
+/**
+ * Whether BigQuery refused to read or plan this one function (an invalid query, access denied on a table behind it,
+ * gone): a 400, 403 or 404 that isn't a rate or quota limit. Not a network error, a 401 (a sign-in to renew, or
+ * `auth_required`), a 429 or a 5xx.
+ */
+function cannotPlan(err: unknown): boolean {
+  if (!(err instanceof ConnectorError) || err.code !== 'query') return false
+  const { status, reason } = (err.details ?? {}) as { status?: number; reason?: string }
+  return (status === 400 || status === 403 || status === 404) && !TRANSIENT_REASONS.has(reason ?? '')
 }
 
 /** A routine's declared type as SQL writes it (`ARRAY<STRING>`; a struct as `STRUCT`). */

@@ -873,6 +873,47 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
       ).toBe(true)
     })
 
+    it('fails the whole list (so it isn’t kept) when a function fails for a reason that isn’t about it', async () => {
+      for (const [refusal, code] of [
+        [{ status: 503, reason: 'backendError', message: 'Backend error' }, 'query'],
+        [{ status: 403, reason: 'rateLimitExceeded', message: 'Exceeded rate limits' }, 'query'],
+      ] as const) {
+        setUp()
+        fake.routines.set('history_at', { args: [], getError: refusal })
+        const { credentials } = account(`optiply.${refusal.reason}`)
+        const err = await failure(describeSqlSchema(pool, connector, optiply(), { credentials }))
+        expect(err.code, refusal.reason).toBe(code)
+        expect(err.message, refusal.reason).toContain(refusal.message)
+      }
+      // A refused function itself (invalid, access denied, gone) is still listed without columns.
+      setUp()
+      fake.routines.set('history_at', {
+        args: [],
+        getError: { status: 404, reason: 'notFound', message: 'Not found: Routine' },
+      })
+      const { credentials } = account('optiply.pia')
+      const schema = await describeSqlSchema(pool, connector, optiply(), { credentials })
+      expect(schema?.tables.find((t) => t.name === 'history_at')).toMatchObject({ columns: [] })
+    })
+
+    it('asks to connect again when the sign-in lapses partway through the list', async () => {
+      setUp()
+      fake.routines.set('history_at', {
+        args: [],
+        getError: { status: 401, reason: 'authError', message: 'Invalid credentials' },
+      })
+      fake.allowOptiplyToken('optiply.quin')
+      const lapsing: CredentialSource = {
+        async accessToken({ force }) {
+          if (force)
+            throw new ConnectorError('auth_required', 'Connect your account to this resource to use it.')
+          return 'optiply.quin'
+        },
+      }
+      const err = await failure(describeSqlSchema(pool, connector, optiply(), { credentials: lapsing }))
+      expect(err.code).toBe('auth_required')
+    })
+
     it('stops at the row limit and says the list is cut short', async () => {
       setUp()
       const { credentials } = account('optiply.otto')

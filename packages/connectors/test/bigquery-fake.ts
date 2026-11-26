@@ -45,7 +45,8 @@ export interface FakeRoutine {
   /** What a dry run says it returns. */
   fields?: { name: string; type: string; mode?: string }[]
   dryRunError?: string
-  getError?: string
+  /** routines.get refuses: a message (403 accessDenied), or any status and reason. */
+  getError?: string | { status: number; reason: string; message: string }
 }
 
 export class FakeBigQuery {
@@ -299,7 +300,10 @@ export class FakeBigQuery {
     }
     const routine = this.routines.get(id)
     if (!routine) return googleError(404, 'notFound', `Not found: Routine ${project}:${dataset}.${id}`)
-    if (routine.getError) return googleError(403, 'accessDenied', routine.getError)
+    if (typeof routine.getError === 'string') return googleError(403, 'accessDenied', routine.getError)
+    if (routine.getError) {
+      return googleError(routine.getError.status, routine.getError.reason, routine.getError.message)
+    }
     return {
       status: 200,
       body: {
