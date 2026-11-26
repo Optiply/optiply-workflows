@@ -1546,3 +1546,42 @@ because Optiply's API trusts Auth0). So: **Google OAuth through M9's sign-in**, 
 - **Tests:** connectors `bigquery.test.ts` "OAuth sign-in" (7), server `oauth-connect.test.ts` (the save check and the
   redirect to Google), e2e `bigquery.spec.ts` (the form, saving, connecting is asked for). The consent and token
   exchange at Google aren't driven in e2e (no fake Google consent or BigQuery API there).
+
+## 2.46 BigQuery with each person's Optiply account: the Optiply data platform (session 62)
+
+Asked by the user on 2026-11-26: a resource that reads the Optiply data platform's BigQuery the way optiply-agent does
+(`~/optiply-agent`, `src/services/bigquery_client.py`). §2.45 said Auth0 can't sign in to BigQuery; through **workload
+identity federation** it can: Google STS exchanges an Optiply (Auth0) access token for a Google token of the same person,
+through the data platform's pool `data-platform-users` (project number 429012531216, provider `auth0`). Branch
+`feat/bigquery-optiply-signin`.
+
+- **Probed first, by hand:** a PKCE sign-in with the "Optiply Workflows" SPA client (Auth0 allows only the production
+  callback for it), then STS: 200, so the pool accepts this client's tokens; the federated identity lists the 64
+  `agent_api` functions. Jobs need `bigquery.jobs.create` in the billing project: granted in `optiply-workflows` per
+  person. **The pool's subject is the person's Optiply email** (the token's `https://optiply.com/email` claim), not
+  `sub`: a grant to `…/subject/auth0|…` did nothing; the audit log's `principalSubject` showed the email. The
+  project's daily query quota is 30 GiB (Service Usage override; the default was 200 TiB).
+- **Config:** a third auth type `{ type: 'optiply', clientId, loginUrl, audience, scope, stsAudience }`; only `clientId`
+  has no default (`https://login.optiply.com/`, `https://api.optiply.com/internal`, `openid email offline_access`, the
+  pool). `stsAudience` must be a `//iam.googleapis.com/…/workloadIdentityPools/…/providers/…` name. `projectId` is
+  required. No secret.
+- **Sign-in:** `httpConfig` gives M9 a custom authorization-code sign-in on the login origin (`/authorize`,
+  `/oauth/token`, `/oauth/revoke`), `audience` as a consent parameter, PKCE, always **perUser**; the base URL is STS's
+  origin, so the consent fingerprint changes if the token's destination does. Nothing in the server's OAuth code
+  changed.
+- **Token source:** the connected Optiply token goes only to STS (`endpoints.stsUrl`); the Google token is cached per
+  hash of the Optiply token (at most 512), never past either token's expiry minus a minute. BigQuery's 401 forces a
+  fresh Optiply token and a new exchange; an STS refusal gets one fresh Optiply token and one more try, then a
+  `connection` error with Google's reason (never the token).
+- **Save check:** the client id and the project; a missing client id (any OAuth sign-in) now says "Add the OAuth app’s
+  client id" / "Add the Optiply app’s client id" instead of the schema's "auth.clientId: Invalid input…"
+  (`missingClientId` in the resources router).
+- **Web:** the third choice in `BigQuerySignIn`, its fields showing the defaults, the redirect URI, and a note (an
+  example `agent_api` query, the Job User grant by email, no unattended runs).
+- **Not done:** the agent's shop-pinning SQL guard (people write their own queries and may read any of their own
+  shops; the functions' membership check is the boundary); the Tables panel (it lists `INFORMATION_SCHEMA.COLUMNS`,
+  where table functions don't appear); grants by group (federated principals are per subject).
+- **Tests:** connectors `bigquery.test.ts` "Optiply sign-in" (9, against a fake STS in `bigquery-fake.ts`); server
+  `oauth-connect.test.ts` (the save check with and without a client id, no secret, the redirect to
+  `login.optiply.com/authorize` with the audience); e2e `bigquery.spec.ts` (the form, both client-id messages, saving,
+  connecting asked for).

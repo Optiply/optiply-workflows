@@ -236,6 +236,29 @@ BigQuery is a database resource (not HTTP through the core above), but it can si
   **Redirect URI** from the form, an **Internal** consent screen, and the scope `https://www.googleapis.com/auth/bigquery`
   (the default is `openid email` plus it). **Project** is required. Shared or each person's own; each account needs
   BigQuery Job User in the project. The token is only ever sent to `bigquery.googleapis.com`.
+- **Each person's Optiply account (the Optiply data platform)**: each person signs in to Optiply (Auth0, PKCE, no client
+  secret) and, before every BigQuery call, the connector exchanges that Optiply token at Google STS for a Google token
+  of the same person, through the data platform's workload identity pool (as optiply-agent does). The data platform's
+  `agent_api` table functions then return rows only for webshops that person is a member of:
+  ``SELECT * FROM `optiply-data-platform.agent_api.webshop_product`('<webshop uuid>')``. Set up:
+  - **Client ID:** the "Optiply Workflows" Auth0 app (the one the Optiply SDK resource signs in with); its Allowed
+    Callback URLs must hold this site's `/api/oauth/callback` (the form shows it). The other fields keep their
+    defaults: `https://login.optiply.com/`, audience `https://api.optiply.com/internal`, scopes `openid email
+    offline_access`, and the pool `//iam.googleapis.com/projects/429012531216/locations/global/workloadIdentityPools/data-platform-users/providers/auth0`.
+  - **Project** `optiply-workflows`, **Location** `EU`. Jobs run and are billed there; the project's daily query quota
+    is 30 GiB (BigQuery's free tier is 1 TiB a month).
+  - **Each person** needs BigQuery Job User in that project for their data-platform identity, which the pool names
+    **by Optiply email** (not the Auth0 `sub`):
+    `gcloud projects add-iam-policy-binding optiply-workflows --role=roles/bigquery.jobUser --condition=None
+    --member='principal://iam.googleapis.com/projects/429012531216/locations/global/workloadIdentityPools/data-platform-users/subject/<their Optiply email>'`.
+    Never grant it to the whole pool (`principalSet://…/*`): every Optiply customer can get a token from it, so any of
+    them could bill queries to our project. A denied job's audit log (`protoPayload.authenticationInfo.principalSubject`)
+    shows the exact identity.
+  - **What fails how:** STS refusing the token → "Google refused to exchange your Optiply sign-in for data platform
+    access (invalid_grant: …)" after one retry with a fresh token (the app or pool is wrong, or Auth0 revoked the
+    sign-in: connect again); no Job User → BigQuery's `accessDenied` ("User does not have bigquery.jobs.create
+    permission in project …"); not a member of the webshop → the function's own `no access: …` error (its membership
+    copy can lag by up to 2 hours). Each person's own account always: workflows that run on their own can't use it.
 - **What fails how:** nobody connected → "Connect your account to this resource to use it." (Test connection and
   queries, before any call to BigQuery); a scheduled run on a per-person resource → "nobody is behind this run"; an
   account without the role → BigQuery's own `accessDenied` ("User does not have bigquery.jobs.create permission …");

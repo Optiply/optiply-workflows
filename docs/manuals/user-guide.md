@@ -284,6 +284,16 @@ Salesforce, and BigQuery, REST, GraphQL, OpenAPI and SDK resources set to OAuth 
 The account card shows **Connected**, **Needs reconnecting** or **Not connected**. If a provider stops accepting the
 connection, click **Reconnect**.
 
+A BigQuery resource can also sign in with **each person's Optiply account**, to read the Optiply data platform. Click
+**Connect your account** and sign in with your Optiply login. Queries then see only the webshops you are a member of
+in Optiply. The data platform's tables are functions that take the webshop's id:
+
+```sql
+SELECT * FROM `optiply-data-platform.agent_api.webshop_product`('<webshop uuid>')
+```
+
+If a query says you have no BigQuery Job User permission, ask an admin to grant it to your Optiply account.
+
 #### Resources that sign in with a custom auth flow
 
 A REST or GraphQL resource set to **Custom auth flow** signs in with steps you define: **Request** (a call to the

@@ -2009,6 +2009,33 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 62 steps (2026-11-26): BigQuery with each person's Optiply account (branch `feat/bigquery-optiply-signin`)
+
+The user asked for a resource that reads the **Optiply data platform** (BigQuery `optiply-data-platform.agent_api.*`)
+the way optiply-agent does (cloned read-only at `~/optiply-agent`; `src/services/bigquery_client.py`):
+`architecture.md` §2.46.
+
+- **Probe and GCP setup (done by hand, on the user's word):** a PKCE sign-in with the "Optiply Workflows" SPA client →
+  STS 200 → 64 `agent_api` functions listed → a dry run billed to `optiply-workflows` was refused until **BigQuery Job
+  User** was granted there to the user's federated identity. **The pool names people by Optiply email**:
+  `principal://iam.googleapis.com/projects/429012531216/locations/global/workloadIdentityPools/data-platform-users/subject/<email>`
+  (a grant to `…/subject/auth0|…` did nothing; removed). Then the dry run passed (~4.7 MB). The project's **daily query
+  quota is now 30 GiB** (Service Usage consumer override, `force=true`; the default was 200 TiB). Only the user is
+  granted so far; colleagues need the same binding with their email (runbook). No grant to the whole pool: any Optiply
+  customer can get a token from it.
+- **Step 1a** (`af3f61c`): the connector's `auth.type: 'optiply'` (sign-in settings for M9, the STS exchange with its
+  cache and retries), the save check, a fake STS; 9 connector tests and 1 server test.
+- **Step 1b** (`e427761`): the settings form's third choice, its fields with defaults, the note; e2e step.
+- **Step 1c:** friendlier save errors for a missing client id (Google OAuth and Optiply sign-in; any `auth.clientId`
+  issue): "Add the OAuth app’s client id" / "Add the Optiply app’s client id" (server test cases with an empty and a
+  missing id; e2e asserts both); docs: runbook (setup, the grant command, what fails how), admin and user guides,
+  README, `architecture.md` §2.46, this section.
+- **Next:** the review agents (security-auditor, bug-hunter) on the branch against `origin/main`, the user decides the
+  fixes, then the PR. After it's live: a production BigQuery resource "Optiply data platform" (client id of the
+  "Optiply Workflows" app, project `optiply-workflows`, location `EU`), the user connects and runs an `agent_api`
+  query; tell the data team we use their pool from a second app; the specialist folder's `20-runbook-connectors.md`
+  and `11-platform-admin-guide.md`/`10-platform-user-guide.md` re-copied from `main`.
+
 ## 14. Session 61 steps (2026-11-21): custom auth flow extras (branch `feat/custom-auth-extras`)
 
 The user asked for M9's three custom-auth gaps (§11 "OAuth and custom auth"), for REST and GraphQL alike (GraphQL
@@ -2880,6 +2907,11 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Progress:** step 0 `11b334b` (with `122e32a` before it: the CLI's `login` no longer echoes the token, found when the user signed in on their stack). Step 1 `4b69a9b`: AI resources. **Plan change (step 1):** the AI resources are **M27's service connectors** (`SERVICE_TYPES` `anthropic`, `openai_compatible`; `AI_ACTIONS` in `services/actions.ts`), so the "AI block" is the **existing resource query block** on an AI resource and the app's AI query the existing resource query: no `type: 'ai'` block. The answer is the query's data (text, the extracted JSON, `{label|labels, reason}`), usage/model/cost/prompts its metadata. Code: `packages/connectors/src/ai/` (`core.ts` the actions and checks, `anthropic.ts` the SDK, `openai.ts` chat completions, `prices.ts`, `fake.ts`); `QueryContext.ai` (`AiRunContext`: `budget {spent, add}`, `tools` for the agent) and the `ai_*` error codes; `RunOptions.ai`. Found: SDK 1.x sends the key as `Authorization: Bearer` (not `x-api-key`); the SDK reads `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` from the environment unless given everything (we pass the key, base URL and `authToken: null`); undici's `fetch` doesn't take the SDK's `Headers` (plain headers passed); a private IP written in the base URL skips the guarded lookup (`checkBaseUrl`). Tests: `packages/connectors/test/ai.test.ts` (12), `apps/server/test/ai-resources.test.ts` (2). Steps 2–4 `2d3c660` (one commit: step 3's provider changes landed in `core.ts` before step 2 was committed): the run's budget (`RunAiBudget`, per execution, shared with function calls, from the checkpoints on resume), the run log line per AI call, `ow_ai_calls_total`/`ow_ai_tokens_total`/`ow_ai_cost_usd_total` (counted in the connectors: playground and apps too); the agent (`ai/agent.ts`; tools described and run by the engine's `aiToolHost` as child runs; tools are called workflows for permissions and the validator); apps already worked (no budget, no agent). Tests: connectors 396, engine 214, definition 195, app-runtime 41, server 631 + 1 skipped. Step 5 `974fe13`: the web (forms, the AI group, typed data in completions, the run view's AI section, the tools picker) and `m35-done-when.spec.ts` (2 passed); web unit 133; shots light and dark in session 39's scratchpad `m35-shots/` (`/private/tmp/claude-501/-Users-optiply-optiply-workflows/5a62e40c-a0f6-4e48-ae2d-a938c7c2f9b9/scratchpad/m35-shots/`). Step 6: the runbook `docs/runbooks/ai.md`, §2.38 "As built", §9ac. Step 7 `ac807b3`: the review (`code-review`, high): 10 found, 10 fixed (§2.38 "As built" lists them; the worst: redirects were followed past the private-network guard; OpenAI's API got `max_tokens` and `strict` schemas it refuses; a repeated tool-call id shared one child run). **Full e2e (before the fixes): 151 passed, 1 failed** in 33.5 min: `webhook-settings` (completions, the known flake from M32/M33; passes alone on the fixed build with `m35-done-when`, `editor`, `connectors`: 9 passed). Final suites on `ac807b3`: connectors 400, engine 214, definition 195, app-runtime 41, web 133, server 631 + 1 skipped; biome ci, typecheck, builds. **M35 is done** except the check by hand against Anthropic (§12 #44).
 
 ## 15. How to start the next session
+
+**Session 62 (2026-11-26):** BigQuery with each person's Optiply account (the Optiply data platform through Google
+STS) on `feat/bigquery-optiply-signin` (§14 "Session 62", `architecture.md` §2.46): steps 1a–1c committed, **not
+pushed**; next the two review agents, then the PR. GCP: Job User for the user's data-platform identity and a 30 GiB
+daily query quota on `optiply-workflows` (done). The notes for session 61 below still hold.
 
 **Start session 62 with (end of session 61, 2026-11-21, late):** PR #21 (custom auth flows: multipart steps, the
 Sign-in card, a form step for each person's own sign-in; §14 "Session 61") is merged as `086423c` and **live**:
