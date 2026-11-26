@@ -162,11 +162,13 @@ function withoutUnusedClientSecret(
  * An OAuth sign-in saved without its app's client id says so in words, rather than as a schema error
  * ("auth.clientId: Invalid input: expected string, received undefined"). Null for any other problem.
  */
-function missingClientId(config: unknown, issues: { path: PropertyKey[] }[]): string | null {
+function missingClientId(type: string, config: unknown, issues: { path: PropertyKey[] }[]): string | null {
   const clientId = issues.some((i) => i.path.length === 2 && i.path[0] === 'auth' && i.path[1] === 'clientId')
   if (!clientId) return null
-  const type = (config as { auth?: { type?: unknown } } | null)?.auth?.type
-  return type === 'optiply' ? 'Add the Optiply app’s client id' : 'Add the OAuth app’s client id'
+  // Named as each form labels the field.
+  if (type === 'salesforce') return 'Add the connected app’s consumer key'
+  const auth = (config as { auth?: { type?: unknown } } | null)?.auth?.type
+  return auth === 'optiply' ? 'Add the Optiply app’s client id' : 'Add the OAuth app’s client id'
 }
 
 /**
@@ -654,7 +656,7 @@ export const resourcesRouter = router({
 
       const config = connector.configSchema.safeParse(input.config)
       if (!config.success) {
-        const missing = missingClientId(input.config, config.error.issues)
+        const missing = missingClientId(resource.type, input.config, config.error.issues)
         if (missing) throw new TRPCError({ code: 'BAD_REQUEST', message: missing })
         throw invalidInput('configuration', config.error.issues)
       }

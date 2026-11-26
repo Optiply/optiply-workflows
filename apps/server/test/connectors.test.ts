@@ -338,6 +338,19 @@ describe('service resources', () => {
       await admin.mutate('resources.create', { type: 'salesforce', name: 'Salesforce', slug: 'salesforce' }),
     )
     const domain = 'https://optiply.my.salesforce.com'
+    // A missing consumer key is named as the form names it.
+    for (const auth of [
+      { type: 'clientCredentials', clientId: ' ' },
+      { type: 'oauth', clientId: '' },
+    ]) {
+      const noKey = await admin.mutate('resources.saveConfig', {
+        resourceId: cc.id,
+        environmentId: prodId,
+        config: { domain, auth },
+        secrets: { clientSecret: 'shh' },
+      })
+      expect(noKey.body.error?.message, auth.type).toBe('Add the connected app’s consumer key')
+    }
     const noSecret = await admin.mutate('resources.saveConfig', {
       resourceId: cc.id,
       environmentId: prodId,
