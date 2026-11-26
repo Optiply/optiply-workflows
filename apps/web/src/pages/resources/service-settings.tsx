@@ -608,8 +608,11 @@ function loginChoice(saved: string | undefined): string {
 function OptiplyDataPlatformSignIn({ props, resourceId }: { props: FieldsProps; resourceId: string }) {
   const auth = props.config.auth as Record<string, string | undefined>
   const setAuth = (key: string, value: string) => props.set('auth', { ...auth, [key]: value || undefined })
+  // The default shows as the placeholder: an empty field means the default (the connector applies it), so clearing
+  // the field doesn't put the default back under the cursor.
   const text = (key: keyof typeof OPTIPLY_SIGN_IN) => ({
-    value: auth[key] ?? OPTIPLY_SIGN_IN[key],
+    value: auth[key] ?? '',
+    placeholder: OPTIPLY_SIGN_IN[key],
     disabled: props.disabled,
     onChange: (e: { target: { value: string } }) => setAuth(key, e.target.value),
   })

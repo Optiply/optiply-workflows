@@ -61,7 +61,18 @@ test('a BigQuery resource signs in with a key or with each person’s Google acc
       'optiply.eu.auth0.com (production, by its Auth0 name)',
       'optiply-staging.eu.auth0.com (staging)',
     ])
-    await expect(page.getByLabel('Audience')).toHaveValue('https://api.optiply.com/internal')
+    // Defaults show as placeholders: a field you clear stays empty while you type (empty = the default).
+    await expect(page.getByLabel('Audience')).toHaveAttribute(
+      'placeholder',
+      'https://api.optiply.com/internal',
+    )
+    await expect(page.getByLabel('Scopes')).toHaveAttribute('placeholder', 'openid email offline_access')
+    await page.getByLabel('Scopes').pressSequentially('openid')
+    await page.getByLabel('Scopes').clear()
+    await expect(page.getByLabel('Scopes')).toHaveValue('')
+    await page.getByLabel('Scopes').pressSequentially('openid email')
+    await expect(page.getByLabel('Scopes')).toHaveValue('openid email')
+    await page.getByLabel('Scopes').clear()
     await expect(page.getByTestId('bigquery-optiply-note')).toContainText('data-platform-users')
     await expect(page.getByText('Redirect URI')).toBeVisible()
     await expect(page.getByTestId('bigquery-optiply-note')).toContainText('BigQuery Job User')
