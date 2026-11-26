@@ -1561,27 +1561,36 @@ through the data platform's pool `data-platform-users` (project number 429012531
   person. **The pool's subject is the person's Optiply email** (the token's `https://optiply.com/email` claim), not
   `sub`: a grant to `…/subject/auth0|…` did nothing; the audit log's `principalSubject` showed the email. The
   project's daily query quota is 30 GiB (Service Usage override; the default was 200 TiB).
-- **Config:** a third auth type `{ type: 'optiply', clientId, loginUrl, audience, scope, stsAudience }`; only `clientId`
-  has no default (`https://login.optiply.com/`, `https://api.optiply.com/internal`, `openid email offline_access`, the
-  pool). `stsAudience` must be a `//iam.googleapis.com/…/workloadIdentityPools/…/providers/…` name. `projectId` is
-  required. No secret.
+- **Config:** a third auth type `{ type: 'optiply', clientId, loginUrl, audience, scope }`; only `clientId` has no
+  default (`https://login.optiply.com/`, `https://api.optiply.com/internal`, `openid email offline_access`).
+  `loginUrl` must be https on one of `OPTIPLY_LOGIN_URLS` (login.optiply.com, optiply.eu.auth0.com,
+  optiply-staging.eu.auth0.com). The identity pool is not a setting: `endpoints.stsAudience`, the data platform's (a
+  fake's in tests). `projectId` is required. No secret.
 - **Sign-in:** `httpConfig` gives M9 a custom authorization-code sign-in on the login origin (`/authorize`,
-  `/oauth/token`, `/oauth/revoke`), `audience` as a consent parameter, PKCE, always **perUser**; the base URL is STS's
-  origin, so the consent fingerprint changes if the token's destination does. Nothing in the server's OAuth code
-  changed.
+  `/oauth/token`, `/oauth/revoke`), `audience` as a consent parameter, PKCE, always **perUser**, `clientAuth: 'none'`
+  (new in the OAuth core: a public app never sends a client secret, even one still stored); the base URL is STS's
+  origin. Saving an Optiply sign-in drops a stored `clientSecret` (`withoutUnusedClientSecret`).
 - **Token source:** the connected Optiply token goes only to STS (`endpoints.stsUrl`); the Google token is cached per
-  hash of the Optiply token (at most 512), never past either token's expiry minus a minute. BigQuery's 401 forces a
-  fresh Optiply token and a new exchange; an STS refusal gets one fresh Optiply token and one more try, then a
-  `connection` error with Google's reason (never the token).
+  hash of the Optiply token (at most 512), never past either token's expiry minus a minute; simultaneous queries share
+  one exchange in flight (its own 30 s timeout; each query waits with its own signal). BigQuery's 401 forces a fresh
+  Optiply token and a new exchange; STS refusing the token itself (`invalid_grant`) gets one fresh Optiply token and
+  one more try; other refusals, 429 and 5xx don't. Errors are `connection`, worded by cause, never with the token.
 - **Save check:** the client id and the project; a missing client id (any OAuth sign-in) now says "Add the OAuth app’s
-  client id" / "Add the Optiply app’s client id" instead of the schema's "auth.clientId: Invalid input…"
-  (`missingClientId` in the resources router).
-- **Web:** the third choice in `BigQuerySignIn`, its fields showing the defaults, the redirect URI, and a note (an
-  example `agent_api` query, the Job User grant by email, no unattended runs).
+  client id" / "Add the Optiply app’s client id" (Salesforce: "Add the connected app’s consumer key") instead of the
+  schema's "auth.clientId: Invalid input…" (`missingClientId` in the resources router).
+- **Web:** the third choice in `BigQuerySignIn`: Client ID, Sign-in domain (a select of the three), Audience and
+  Scopes (defaults as placeholders), the redirect URI, and a note (the fixed pool, an example `agent_api` query, the
+  Job User grant by email, no unattended runs).
+- **Review (before the PR):** security-auditor and bug-hunter found 1 Medium (a Google client secret kept after
+  switching to Optiply sign-in was sent to Auth0) and 6 Low (the pool and the sign-in domain were editable; needless
+  refreshes on STS refusals; no shared exchange; Salesforce's wording; defaulted fields refilling): all fixed, one
+  commit each. The one "needs check" (grants by the email claim) was settled by the data team and the Auth0 admin:
+  the claim comes only from verified, unique emails.
 - **Not done:** the agent's shop-pinning SQL guard (people write their own queries and may read any of their own
   shops; the functions' membership check is the boundary); the Tables panel (it lists `INFORMATION_SCHEMA.COLUMNS`,
   where table functions don't appear); grants by group (federated principals are per subject).
-- **Tests:** connectors `bigquery.test.ts` "Optiply sign-in" (9, against a fake STS in `bigquery-fake.ts`); server
-  `oauth-connect.test.ts` (the save check with and without a client id, no secret, the redirect to
-  `login.optiply.com/authorize` with the audience); e2e `bigquery.spec.ts` (the form, both client-id messages, saving,
-  connecting asked for).
+- **Tests:** connectors `bigquery.test.ts` "Optiply sign-in" (14, against a fake STS in `bigquery-fake.ts`) and
+  `oauth.test.ts` (a `none` app sends no secret); server `oauth-connect.test.ts` (the save check, no secret, a stale
+  secret dropped, a look-alike domain refused, the redirect to `login.optiply.com/authorize` with the audience) and
+  `connectors.test.ts` (Salesforce's wording); e2e `bigquery.spec.ts` (the form, both client-id messages, the
+  domains, placeholders, saving, connecting asked for).

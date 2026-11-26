@@ -2030,8 +2030,13 @@ the way optiply-agent does (cloned read-only at `~/optiply-agent`; `src/services
   issue): "Add the OAuth app’s client id" / "Add the Optiply app’s client id" (server test cases with an empty and a
   missing id; e2e asserts both); docs: runbook (setup, the grant command, what fails how), admin and user guides,
   README, `architecture.md` §2.46, this section.
-- **Next:** the review agents (security-auditor, bug-hunter) on the branch against `origin/main`, the user decides the
-  fixes, then the PR. After it's live: a production BigQuery resource "Optiply data platform" (client id of the
+- **Review:** security-auditor and bug-hunter on the branch (`architecture.md` §2.46 "Review"): the user chose to fix
+  all 7 findings, one commit each: `ee83a71` (no client secret to a public app; dropped on save), `93267e0` (the
+  pool fixed), `1d6a9f0` (sign-in domains: Optiply's three, https), `1ccc9e1` (fresh Optiply token only on
+  `invalid_grant`; errors by cause), `35daa5d` (one shared exchange), `ee744d3` (Salesforce's "consumer key"),
+  `172ed48` (placeholders). The "needs check" was settled by the data team and the Auth0 admin: the email claim
+  comes only from verified, unique emails.
+- **Next:** push, then the PR. After it's live: a production BigQuery resource "Optiply data platform" (client id of the
   "Optiply Workflows" app, project `optiply-workflows`, location `EU`), the user connects and runs an `agent_api`
   query; tell the data team we use their pool from a second app; the specialist folder's `20-runbook-connectors.md`
   and `11-platform-admin-guide.md`/`10-platform-user-guide.md` re-copied from `main`.
@@ -2909,8 +2914,8 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 ## 15. How to start the next session
 
 **Session 62 (2026-11-26):** BigQuery with each person's Optiply account (the Optiply data platform through Google
-STS) on `feat/bigquery-optiply-signin` (§14 "Session 62", `architecture.md` §2.46): steps 1a–1c committed, **not
-pushed**; next the two review agents, then the PR. GCP: Job User for the user's data-platform identity and a 30 GiB
+STS) on `feat/bigquery-optiply-signin` (§14 "Session 62", `architecture.md` §2.46): steps 1a–1c and the 7 review fixes
+committed, **not pushed**; next push and the PR. GCP: Job User for the user's data-platform identity and a 30 GiB
 daily query quota on `optiply-workflows` (done). The notes for session 61 below still hold.
 
 **Start session 62 with (end of session 61, 2026-11-21, late):** PR #21 (custom auth flows: multipart steps, the
