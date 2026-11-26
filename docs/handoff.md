@@ -2039,11 +2039,10 @@ the way optiply-agent does (cloned read-only at `~/optiply-agent`; `src/services
 - **Shipped (the user away, on their word):** PR #22 CI green on the first try (check 9m, docker 4m, e2e 22m) →
   merged as `4a3963a` → CI on `main` green → Deploy run by hand (`gh workflow run Deploy --ref main`, after 18:00) →
   **production runs `4a3963a`** (rollback `086423c`), health 200, the new sign-in choice in the live bundle. VM: the
-  `9dc6fec` and `da8961b` images removed, build cache pruned (disk 49% → 33%). **Registry: the same two versions
-  still to delete** (the permission check refused it while the user was away): `for t in 9dc6fec da8961b; do for i in
-  app code-executor jdbc-runner python-builder sdk-runner; do gcloud artifacts docker images delete
-  us-east1-docker.pkg.dev/optiply-workflows/ow/$i:$t --delete-tags --quiet; done; done`.
-- **Next (the user's):** the registry cleanup above; a production BigQuery resource "Optiply data platform" (Each
+  `9dc6fec` and `da8961b` images removed, build cache pruned (disk 49% → 33%). **Registry:** the same two versions deleted
+  afterwards on the user's word (one untagged `code-executor` image removed by digest); it keeps 10 images (the 5
+  of `4a3963a` and of `086423c`, 1.64 GB).
+- **Next (the user's):** a production BigQuery resource "Optiply data platform" (Each
   person's Optiply account, the Optiply Workflows app's client id, project `optiply-workflows`, location `EU`),
   connect and run an `agent_api` query; Job User per colleague by email (runbook); tell the data team; re-copy
   `10-`, `11-` and `20-runbook-connectors.md` into the specialist folder. After it's live: a production BigQuery resource "Optiply data platform" (client id of the
@@ -2925,8 +2924,8 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 **Session 62 (2026-11-26):** BigQuery with each person's Optiply account (the Optiply data platform through Google
 STS) on `feat/bigquery-optiply-signin` (§14 "Session 62", `architecture.md` §2.46): PR #22 merged as `4a3963a` and **live**
-(**production runs `4a3963a`**, rollback `086423c`, deployed by hand). Left for the user: deleting `9dc6fec` and
-`da8961b` from the registry (command in §14 "Session 62"), then setting up the production resource. GCP: Job User for the user's data-platform identity and a 30 GiB
+(**production runs `4a3963a`**, rollback `086423c`, deployed by hand). VM and registry keep only `4a3963a` +
+`086423c`. Left for the user: setting up the production resource (§14 "Session 62", "Next"). GCP: Job User for the user's data-platform identity and a 30 GiB
 daily query quota on `optiply-workflows` (done). The notes for session 61 below still hold.
 
 **Start session 62 with (end of session 61, 2026-11-21, late):** PR #21 (custom auth flows: multipart steps, the
