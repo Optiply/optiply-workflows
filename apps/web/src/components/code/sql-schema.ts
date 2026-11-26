@@ -1,51 +1,16 @@
-import { isUsualSchema, sqlTableLabel, sqlTableName } from '@/lib/sql-schema'
+import { sqlTableLabel, sqlTableName } from '@/lib/sql-schema'
 import { monaco } from './monaco'
+import { type EditorSqlSchema, lower, referencedTables } from './sql-references'
 
 // SQL completions from a database resource's tables and columns (session 57), per model: table names (with their
 // schema where it isn't the usual one), a table's or alias's columns after `name.`, a schema's tables after
 // `schema.`, and the columns of the tables the query already names. Inside `{{ }}` the template completions answer.
 
-export interface EditorSqlSchema {
-  tables: {
-    schema: string
-    name: string
-    columns: { name: string; type: string; nullable: boolean }[]
-    /** A table function's call, inserted instead of its name. */
-    insert?: string
-  }[]
-}
+export type { EditorSqlSchema } from './sql-references'
 
 const schemas = new Map<string, EditorSqlSchema>()
 
 let registered = false
-
-const lower = (s: string) => s.toLowerCase()
-
-/** The query's `from` / `join` tables, by name and by alias: `orders o`, `public.orders AS o`. */
-function referencedTables(text: string, schema: EditorSqlSchema) {
-  const byName = new Map<string, EditorSqlSchema['tables'][number]>()
-  for (const t of schema.tables) {
-    byName.set(lower(`${t.schema}.${t.name}`), t)
-    // An unqualified name means the usual schema's table (search_path, dbo) when two schemas have one.
-    const bare = byName.get(lower(t.name))
-    if (!bare || (!isUsualSchema(bare.schema) && isUsualSchema(t.schema))) byName.set(lower(t.name), t)
-  }
-  const aliases = new Map<string, EditorSqlSchema['tables'][number]>()
-  const referenced = new Set<EditorSqlSchema['tables'][number]>()
-  const re = /\b(?:from|join|update|into)\s+([`"[\]\w.-]+)(?:\s+(?:as\s+)?([A-Za-z_]\w*))?/gi
-  for (const m of text.matchAll(re)) {
-    const name = lower(m[1]!.replace(/[`"[\]]/g, ''))
-    const table = byName.get(name)
-    if (!table) continue
-    referenced.add(table)
-    const alias =
-      m[2] && !/^(where|join|on|left|right|inner|outer|full|cross|group|order|limit|set|values)$/i.test(m[2])
-        ? m[2]
-        : null
-    if (alias) aliases.set(lower(alias), table)
-  }
-  return { byName, aliases, referenced }
-}
 
 function register(): void {
   if (registered) return
