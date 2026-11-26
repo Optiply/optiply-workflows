@@ -543,6 +543,179 @@ describe('OAuth sign-in', () => {
   })
 })
 
+describe('Optiply sign-in (the data platform, through STS)', () => {
+  const optiply = (config: Record<string, unknown> = {}) =>
+    resource(
+      {
+        location: 'EU',
+        projectId: 'optiply-workflows',
+        auth: { type: 'optiply', clientId: 'spa-client', stsAudience: fake.stsAudience },
+        ...config,
+      },
+      {},
+      String(++version),
+    )
+  /**
+   * A connected Optiply account: hands out `first`, and `fresh` from the first forced ask on (as the server does: it
+   * keeps the refreshed token). STS accepts both.
+   */
+  const account = (first: string, fresh = `${first}-fresh`) => {
+    const asks: boolean[] = []
+    let current = first
+    const credentials: CredentialSource = {
+      async accessToken({ force }) {
+        asks.push(force === true)
+        if (force) current = fresh
+        return current
+      },
+    }
+    fake.allowOptiplyToken(first)
+    fake.allowOptiplyToken(fresh)
+    return { credentials, asks }
+  }
+  const query = (res: ResolvedResource, credentials?: CredentialSource, sql = 'SELECT 1') =>
+    runQuery(pool, connector, res, { sql }, { evaluate: scopeEvaluator({}), credentials })
+  /** An unsigned JWT with this `exp` (seconds), as Auth0's access tokens are shaped. */
+  const jwt = (exp: number, id: string) =>
+    `${Buffer.from('{"alg":"RS256"}').toString('base64url')}.${Buffer.from(JSON.stringify({ exp, sub: id })).toString('base64url')}.sig`
+
+  it("exchanges the person's Optiply token at STS and runs jobs with the Google token, never the Optiply one", async () => {
+    const before = fake.stsIssued
+    const { credentials } = account('optiply.alice')
+    await query(optiply(), credentials)
+    expect(fake.stsCalls()).toHaveLength(1)
+    expect(fake.stsCalls()[0]!.body).toMatchObject({
+      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+      audience: fake.stsAudience,
+      subject_token: 'optiply.alice',
+      subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+      requested_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+    })
+    const google = `fed-${before + 1}`
+    expect(fake.apiCalls().every((r) => r.authorization === `Bearer ${google}`)).toBe(true)
+    expect(JSON.stringify(fake.apiCalls())).not.toContain('optiply.alice')
+    expect(insertBody().jobReference.projectId).toBe('optiply-workflows')
+  })
+
+  it('reuses the Google token for the same Optiply token, and exchanges a new Optiply token again', async () => {
+    const res = optiply()
+    const alice = account('optiply.erin')
+    await query(res, alice.credentials)
+    await query(res, alice.credentials)
+    expect(fake.stsCalls()).toHaveLength(1)
+    const bob = account('optiply.frank')
+    await query(res, bob.credentials)
+    expect(fake.stsCalls()).toHaveLength(2)
+    expect(fake.stsCalls()[1]!.body).toMatchObject({ subject_token: 'optiply.frank' })
+  })
+
+  it('never keeps a Google token past the Optiply token it came from', async () => {
+    const res = optiply()
+    const soon = jwt(Math.floor(Date.now() / 1000) + 30, 'grace') // inside the minute's margin
+    const { credentials } = account(soon)
+    await query(res, credentials)
+    await query(res, credentials)
+    // Every BigQuery call (an insert and a results read per query) got a freshly exchanged token.
+    expect(fake.apiCalls().length).toBeGreaterThanOrEqual(4)
+    expect(fake.stsCalls()).toHaveLength(fake.apiCalls().length)
+  })
+
+  it('gets a fresh Optiply token and exchanges it again when BigQuery refuses the Google token', async () => {
+    const { credentials, asks } = account('optiply.old', 'optiply.new')
+    fake.rejectNextToken = true
+    await query(optiply(), credentials)
+    expect(asks.slice(0, 2)).toEqual([false, true])
+    expect(fake.stsCalls().map((r) => (r.body as Record<string, string>).subject_token)).toEqual([
+      'optiply.old',
+      'optiply.new',
+    ])
+  })
+
+  it('tries once more with a fresh Optiply token when STS refuses one, then reports why without the token', async () => {
+    const once = account('optiply.henk', 'optiply.henk2')
+    fake.refuseNextExchange = true
+    await query(optiply(), once.credentials)
+    expect(once.asks.slice(0, 2)).toEqual([false, true])
+    expect(fake.stsCalls().map((r) => (r.body as Record<string, string>).subject_token)).toEqual([
+      'optiply.henk',
+      'optiply.henk2',
+    ])
+
+    const asks: boolean[] = []
+    const revoked: CredentialSource = {
+      async accessToken({ force }) {
+        asks.push(force === true)
+        return 'optiply.revoked' // STS was never told to accept it
+      },
+    }
+    fake.requests.length = 0
+    const err = await failure(query(optiply(), revoked))
+    expect(err.code).toBe('connection')
+    expect(err.message).toMatch(
+      /Google refused to exchange your Optiply sign-in.*invalid_grant: The token is invalid/,
+    )
+    expect(err.message).not.toContain('optiply.revoked')
+    expect(asks).toEqual([false, true])
+    expect(fake.apiCalls()).toHaveLength(0)
+  })
+
+  it('asks for a connected Optiply account when the query has none, before calling STS or BigQuery', async () => {
+    const err = await failure(query(optiply()))
+    expect(err).toMatchObject({
+      code: 'auth_required',
+      message: expect.stringMatching(/Connect your Optiply account/),
+    })
+    expect(fake.requests).toHaveLength(0)
+  })
+
+  it('Test connection dry-runs as the person and says so', async () => {
+    const { credentials } = account('optiply.ivy')
+    expect(await testResource(connector, optiply(), { credentials })).toMatchObject({
+      ok: true,
+      message: 'BigQuery project optiply-workflows as your Optiply account',
+    })
+    expect(fake.apiCalls('dryRun').at(-1)!.authorization).toMatch(/^Bearer fed-/)
+  })
+
+  it('needs the project jobs run in', async () => {
+    const { credentials } = account('optiply.jan')
+    expect(await testResource(connector, optiply({ projectId: undefined }), { credentials })).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_config', details: { issues: [{ path: 'projectId' }] } },
+    })
+  })
+
+  it("gives the server's OAuth sign-in Optiply's Auth0 endpoints, the API audience and each person's own account", () => {
+    const http = httpConfigFor('bigquery', {
+      projectId: 'p',
+      auth: { type: 'optiply', clientId: 'spa-client', loginUrl: 'https://login.optiply.com/some/path' },
+    })
+    expect(http).toMatchObject({
+      baseUrl: 'https://sts.googleapis.com/',
+      allowedHosts: [],
+      auth: {
+        type: 'oauth2AuthorizationCode',
+        provider: 'custom',
+        authorizeUrl: 'https://login.optiply.com/authorize',
+        tokenUrl: 'https://login.optiply.com/oauth/token',
+        revokeUrl: 'https://login.optiply.com/oauth/revoke',
+        clientId: 'spa-client',
+        scope: 'openid email offline_access',
+        authorizeParams: [{ key: 'audience', value: 'https://api.optiply.com/internal' }],
+        pkce: true,
+        tokens: 'perUser',
+      },
+    })
+    // Only a workload identity pool provider can be the exchange's audience.
+    expect(
+      httpConfigFor('bigquery', {
+        projectId: 'p',
+        auth: { type: 'optiply', clientId: 'c', stsAudience: 'https://evil.example.com/' },
+      }),
+    ).toBeNull()
+  })
+})
+
 describe('sql.column and sql.direction', () => {
   it('put the checked column and direction into the query text; values stay parameters', async () => {
     await runQuery(

@@ -727,6 +727,43 @@ describe('BigQuery with Google OAuth sign-in', () => {
     // Each person connects their own: there is no shared account to connect.
     expect((await start(adminCookie, id, 'shared')).res.statusCode).toBe(400)
   })
+
+  it("Optiply sign-in: saved without a client secret, each person goes to Optiply's Auth0 for the API audience", async () => {
+    const id = data(
+      await admin.mutate('resources.create', {
+        type: 'bigquery',
+        name: 'Data platform',
+        slug: 'data_platform',
+      }),
+    ).id as string
+    const optiply = { type: 'optiply', clientId: 'optiply-workflows-spa' }
+    for (const [config, message] of [
+      [{ ...base, projectId: 'optiply-workflows', auth: { ...optiply, clientId: ' ' } }, 'auth.clientId'],
+      [{ ...base, auth: optiply }, 'Set the project'],
+    ] as const) {
+      const refused = await save(id, config)
+      expect(refused.status, message).toBe(400)
+      expect(refused.body.error?.message).toContain(message)
+    }
+    expect((await save(id, { ...base, projectId: 'optiply-workflows', auth: optiply })).status).toBe(200)
+    const [all] = await env.db.select().from(groups).where(eq(groups.systemKind, 'all_users'))
+    await env.db
+      .insert(permissions)
+      .values({ groupId: all!.id, objectType: 'resource', objectId: id, environmentId: prodId, level: 'use' })
+
+    const { res, location } = await start(memberCookie, id, 'mine')
+    expect(res.statusCode).toBe(302)
+    expect(location!.origin + location!.pathname).toBe('https://login.optiply.com/authorize')
+    expect(Object.fromEntries(location!.searchParams)).toMatchObject({
+      response_type: 'code',
+      client_id: 'optiply-workflows-spa',
+      redirect_uri: 'http://localhost:5173/api/oauth/callback',
+      scope: 'openid email offline_access',
+      audience: 'https://api.optiply.com/internal',
+      code_challenge_method: 'S256',
+    })
+    expect((await start(adminCookie, id, 'shared')).res.statusCode).toBe(400)
+  })
 })
 
 describe('secrets', () => {

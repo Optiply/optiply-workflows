@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { compileSql, paramValue, TemplateError } from '@ow/expressions'
 import { Agent, fetch } from 'undici'
 import { z } from 'zod'
@@ -31,10 +31,20 @@ const labelValue = z.string().regex(/^[a-z0-9_-]{0,63}$/, 'Lowercase letters, di
 
 const SCOPE = 'https://www.googleapis.com/auth/bigquery'
 
+/**
+ * The Optiply data platform's workload identity pool: Google STS takes a person's Optiply (Auth0) access token here
+ * and gives back a Google token of that same person, which the data platform's `agent_api` table functions check
+ * shop membership against.
+ */
+export const OPTIPLY_DATA_PLATFORM_POOL =
+  '//iam.googleapis.com/projects/429012531216/locations/global/workloadIdentityPools/data-platform-users/providers/auth0'
+
 const configSchema = z.object({
   /**
-   * How it signs in: a service account key (the default, as before), or a Google account through OAuth sign-in (M9):
-   * one shared account per environment, or each person's own, so queries run with that person's BigQuery access.
+   * How it signs in: a service account key (the default, as before), a Google account through OAuth sign-in (M9):
+   * one shared account per environment, or each person's own, so queries run with that person's BigQuery access; or
+   * each person's own Optiply account, exchanged at Google STS for a Google token through workload identity
+   * federation (the Optiply data platform: queries see only the webshops that person is a member of).
    */
   auth: z
     .discriminatedUnion('type', [
@@ -44,6 +54,25 @@ const configSchema = z.object({
         clientId: z.string().trim().min(1),
         scope: z.string().default(`openid email ${SCOPE}`),
         tokens: z.enum(['shared', 'perUser']).default('shared'),
+      }),
+      z.object({
+        type: z.literal('optiply'),
+        /** The Auth0 application people sign in with (its Allowed Callback URLs must hold this server's). */
+        clientId: z.string().trim().min(1),
+        /** The Auth0 tenant's sign-in domain; only its origin is used. */
+        loginUrl: z.string().url().default('https://login.optiply.com/'),
+        /** The API the Optiply token is for; the identity pool accepts this one. */
+        audience: z.string().trim().min(1).default('https://api.optiply.com/internal'),
+        scope: z.string().default('openid email offline_access'),
+        /** The workload identity pool provider STS exchanges the Optiply token at. */
+        stsAudience: z
+          .string()
+          .trim()
+          .regex(
+            /^\/\/iam\.googleapis\.com\/projects\/[^/]+\/locations\/global\/workloadIdentityPools\/[^/]+\/providers\/[^/]+$/,
+            'Write it as //iam.googleapis.com/projects/…/locations/global/workloadIdentityPools/…/providers/…',
+          )
+          .default(OPTIPLY_DATA_PLATFORM_POOL),
       }),
     ])
     .default({ type: 'serviceAccount' }),
@@ -95,6 +124,8 @@ interface Client {
   tokens: GoogleTokens | null
   /** Who it signs in as, for Test connection: the key's email (null with OAuth). */
   key: ServiceAccountKey | null
+  /** Optiply sign-in: Google tokens from STS, by a hash of the Optiply token they came from. */
+  federated: Map<string, { token: string; expiresAt: number }>
 }
 
 /** An access token for one API call; `force` gets a fresh one (the API refused the last). */
@@ -105,11 +136,14 @@ export interface BigQueryEndpoints {
   apiUrl: string
   /** Google's OAuth token endpoint (the key's own `token_uri` is ignored, so a key can't send tokens elsewhere). */
   tokenUrl: string
+  /** Google's Security Token Service, where Optiply sign-in exchanges the Optiply token (the only place it goes). */
+  stsUrl: string
 }
 
 const GOOGLE: BigQueryEndpoints = {
   apiUrl: 'https://bigquery.googleapis.com/bigquery/v2',
   tokenUrl: GOOGLE_TOKEN_URL,
+  stsUrl: 'https://sts.googleapis.com/v1/token',
 }
 /** How long one API call may wait for a job before we poll again. */
 const POLL_MS = 10_000
@@ -152,7 +186,7 @@ LIMIT ${limit}`
     },
 
     createClient({ config, secrets }) {
-      if (config.auth.type === 'oauth') {
+      if (config.auth.type !== 'serviceAccount') {
         if (!config.projectId) {
           throw new ConnectorError(
             'invalid_config',
@@ -167,6 +201,7 @@ LIMIT ${limit}`
           endpoints,
           tokens: null,
           key: null,
+          federated: new Map(),
         }
       }
       if (!secrets.serviceAccountKey) {
@@ -188,6 +223,7 @@ LIMIT ${limit}`
           tokenUrl: endpoints.tokenUrl,
           dispatcher: agent,
         }),
+        federated: new Map(),
       }
     },
 
@@ -215,9 +251,11 @@ LIMIT ${limit}`
       )
       const who = client.key
         ? client.key.client_email
-        : client.config.auth.type === 'oauth' && client.config.auth.tokens === 'perUser'
-          ? 'your Google account'
-          : 'the connected Google account'
+        : client.config.auth.type === 'optiply'
+          ? 'your Optiply account'
+          : client.config.auth.type === 'oauth' && client.config.auth.tokens === 'perUser'
+            ? 'your Google account'
+            : 'the connected Google account'
       return { message: `BigQuery project ${client.projectId} as ${who}` }
     },
 
@@ -241,6 +279,29 @@ export const bigqueryConnector = createBigQueryConnector()
 
 /** The REST-shaped settings the server's OAuth sign-in works from; no OAuth for a service account. */
 function bigQueryHttpConfig(config: Config, endpoints: BigQueryEndpoints): RestConfig {
+  const { auth } = config
+  if (auth.type === 'optiply') {
+    // Each person signs in to Optiply (Auth0, PKCE); the token goes only to Google STS (the base URL's origin, so
+    // pointing the resource elsewhere asks everyone to connect again).
+    const login = new URL(auth.loginUrl).origin
+    return restConfigSchema.parse({
+      baseUrl: `${new URL(endpoints.stsUrl).origin}/`,
+      allowedHosts: [],
+      auth: {
+        type: 'oauth2AuthorizationCode',
+        provider: 'custom',
+        authorizeUrl: `${login}/authorize`,
+        tokenUrl: `${login}/oauth/token`,
+        revokeUrl: `${login}/oauth/revoke`,
+        clientId: auth.clientId,
+        scope: auth.scope,
+        authorizeParams: [{ key: 'audience', value: auth.audience }],
+        clientAuth: 'body',
+        pkce: true,
+        tokens: 'perUser',
+      },
+    })
+  }
   const google = oauthPresets.google
   return restConfigSchema.parse({
     baseUrl: `${new URL(endpoints.apiUrl).origin}/`,
@@ -264,15 +325,137 @@ function bigQueryHttpConfig(config: Config, endpoints: BigQueryEndpoints): RestC
   })
 }
 
-/** Where a call's token comes from: the service account's, or the query's connected Google account. */
+/**
+ * Where a call's token comes from: the service account's, the query's connected Google account, or (Optiply sign-in)
+ * a Google token STS exchanged the person's connected Optiply token for.
+ */
 function tokenSource(client: Client, credentials: CredentialSource | undefined): TokenSource {
-  const { tokens } = client
+  const { tokens, config } = client
   if (tokens) return (signal, force) => tokens.token(signal, force)
-  return (signal, force) => {
+  const optiply = config.auth.type === 'optiply'
+  return async (signal, force) => {
     if (!credentials?.accessToken) {
-      throw new ConnectorError('auth_required', 'Connect a Google account to this resource first')
+      throw new ConnectorError(
+        'auth_required',
+        optiply
+          ? 'Connect your Optiply account to this resource first'
+          : 'Connect a Google account to this resource first',
+      )
     }
-    return credentials.accessToken({ signal, force })
+    const accessToken = credentials.accessToken
+    if (!optiply) return accessToken({ signal, force })
+    return federatedToken(client, (fresh) => accessToken({ signal, force: fresh }), signal, force)
+  }
+}
+
+/** Re-exchange this long before the Google token (or the Optiply token it came from) expires. */
+const FEDERATED_SKEW_MS = 60_000
+const FEDERATED_CACHE_MAX = 512
+
+/**
+ * A Google token for the person behind the connected Optiply token, from Google STS (RFC 8693 token exchange),
+ * cached per Optiply token. `force` (BigQuery refused the last one) asks for a fresh Optiply token and exchanges it
+ * again. STS refusing a token that looked valid gets one fresh Optiply token and one more try.
+ */
+async function federatedToken(
+  client: Client,
+  optiplyToken: (fresh: boolean) => Promise<string>,
+  signal: AbortSignal,
+  force: boolean,
+): Promise<string> {
+  const auth = client.config.auth as Extract<Config['auth'], { type: 'optiply' }>
+  const keyOf = (token: string) => createHash('sha256').update(`${auth.stsAudience}\0${token}`).digest('hex')
+  const subject = await optiplyToken(force)
+  const hit = client.federated.get(keyOf(subject))
+  if (!force && hit && hit.expiresAt - FEDERATED_SKEW_MS > Date.now()) return hit.token
+
+  let exchanged = await exchangeAtSts(client, auth.stsAudience, subject, signal)
+  let source = subject
+  if (exchanged.refused !== null && !force) {
+    source = await optiplyToken(true)
+    exchanged = await exchangeAtSts(client, auth.stsAudience, source, signal)
+  }
+  if (exchanged.refused !== null) {
+    throw new ConnectorError(
+      'connection',
+      `Google refused to exchange your Optiply sign-in for data platform access (${exchanged.refused}). ` +
+        'Check that the resource uses the right Optiply app and identity pool, or connect your account again.',
+      { status: exchanged.status },
+    )
+  }
+  const expiresAt = Math.min(
+    Date.now() + exchanged.expiresIn * 1000,
+    jwtExpiry(source) ?? Number.POSITIVE_INFINITY,
+  )
+  if (client.federated.size >= FEDERATED_CACHE_MAX) {
+    for (const [k, v] of client.federated) if (v.expiresAt <= Date.now()) client.federated.delete(k)
+    if (client.federated.size >= FEDERATED_CACHE_MAX) client.federated.clear()
+  }
+  client.federated.set(keyOf(source), { token: exchanged.token, expiresAt })
+  return exchanged.token
+}
+
+type StsResult =
+  | { refused: null; token: string; expiresIn: number }
+  | { refused: string; status: number; token?: undefined; expiresIn?: undefined }
+
+/** One token exchange at Google STS. A refusal comes back (never with the response body quoted whole: it can echo the token). */
+async function exchangeAtSts(
+  client: Client,
+  audience: string,
+  subjectToken: string,
+  signal: AbortSignal,
+): Promise<StsResult> {
+  const url = new URL(client.endpoints.stsUrl)
+  let res: Awaited<ReturnType<typeof fetch>>
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+        audience,
+        scope: 'https://www.googleapis.com/auth/cloud-platform',
+        requested_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+        subject_token: subjectToken,
+        subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+      }).toString(),
+      signal,
+      dispatcher: client.agent,
+    })
+  } catch (err) {
+    throw networkError(err, url)
+  }
+  const text = (await readBody(res, 64 * 1024)).toString('utf8')
+  let body: { access_token?: unknown; expires_in?: unknown; error?: unknown; error_description?: unknown } =
+    {}
+  try {
+    body = JSON.parse(text)
+  } catch {
+    // Not JSON (a proxy's error page): reported by status below.
+  }
+  if (res.ok && typeof body.access_token === 'string' && body.access_token) {
+    const expiresIn = Number(body.expires_in)
+    return {
+      refused: null,
+      token: body.access_token,
+      expiresIn: Number.isFinite(expiresIn) ? expiresIn : 300,
+    }
+  }
+  const reason =
+    typeof body.error === 'string'
+      ? `${body.error}${typeof body.error_description === 'string' ? `: ${body.error_description.slice(0, 200)}` : ''}`
+      : `HTTP ${res.status}`
+  return { refused: reason, status: res.status }
+}
+
+/** A JWT's `exp` in milliseconds, unverified (only to bound the cache); null when it isn't a JWT. */
+function jwtExpiry(token: string): number | null {
+  try {
+    const exp = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8')).exp
+    return typeof exp === 'number' ? exp * 1000 : null
+  } catch {
+    return null
   }
 }
 
