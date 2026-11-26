@@ -57,9 +57,7 @@ test('a BigQuery resource signs in with a key or with each person’s Google acc
     await expect(page.getByLabel('Client secret')).toHaveCount(0)
     await expect(page.getByTestId('optiply-login-url')).toHaveValue('https://login.optiply.com/')
     await expect(page.getByLabel('Audience')).toHaveValue('https://api.optiply.com/internal')
-    await expect(page.getByTestId('optiply-sts-audience')).toHaveValue(
-      /workloadIdentityPools\/data-platform-users/,
-    )
+    await expect(page.getByTestId('bigquery-optiply-note')).toContainText('data-platform-users')
     await expect(page.getByText('Redirect URI')).toBeVisible()
     await expect(page.getByTestId('bigquery-optiply-note')).toContainText('BigQuery Job User')
     await page.getByRole('button', { name: 'Save', exact: true }).click()

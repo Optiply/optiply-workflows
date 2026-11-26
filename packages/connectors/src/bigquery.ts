@@ -64,15 +64,8 @@ const configSchema = z.object({
         /** The API the Optiply token is for; the identity pool accepts this one. */
         audience: z.string().trim().min(1).default('https://api.optiply.com/internal'),
         scope: z.string().default('openid email offline_access'),
-        /** The workload identity pool provider STS exchanges the Optiply token at. */
-        stsAudience: z
-          .string()
-          .trim()
-          .regex(
-            /^\/\/iam\.googleapis\.com\/projects\/[^/]+\/locations\/global\/workloadIdentityPools\/[^/]+\/providers\/[^/]+$/,
-            'Write it as //iam.googleapis.com/projects/…/locations/global/workloadIdentityPools/…/providers/…',
-          )
-          .default(OPTIPLY_DATA_PLATFORM_POOL),
+        // The identity pool isn't a setting: it's the data platform's, fixed (endpoints.stsAudience), so nobody with
+        // Edit can send people's Optiply tokens to be exchanged in a pool of their own.
       }),
     ])
     .default({ type: 'serviceAccount' }),
@@ -138,12 +131,15 @@ export interface BigQueryEndpoints {
   tokenUrl: string
   /** Google's Security Token Service, where Optiply sign-in exchanges the Optiply token (the only place it goes). */
   stsUrl: string
+  /** The workload identity pool provider STS exchanges it at: the data platform's. */
+  stsAudience: string
 }
 
 const GOOGLE: BigQueryEndpoints = {
   apiUrl: 'https://bigquery.googleapis.com/bigquery/v2',
   tokenUrl: GOOGLE_TOKEN_URL,
   stsUrl: 'https://sts.googleapis.com/v1/token',
+  stsAudience: OPTIPLY_DATA_PLATFORM_POOL,
 }
 /** How long one API call may wait for a job before we poll again. */
 const POLL_MS = 10_000
@@ -364,17 +360,17 @@ async function federatedToken(
   signal: AbortSignal,
   force: boolean,
 ): Promise<string> {
-  const auth = client.config.auth as Extract<Config['auth'], { type: 'optiply' }>
-  const keyOf = (token: string) => createHash('sha256').update(`${auth.stsAudience}\0${token}`).digest('hex')
+  const { stsAudience } = client.endpoints
+  const keyOf = (token: string) => createHash('sha256').update(`${stsAudience}\0${token}`).digest('hex')
   const subject = await optiplyToken(force)
   const hit = client.federated.get(keyOf(subject))
   if (!force && hit && hit.expiresAt - FEDERATED_SKEW_MS > Date.now()) return hit.token
 
-  let exchanged = await exchangeAtSts(client, auth.stsAudience, subject, signal)
+  let exchanged = await exchangeAtSts(client, stsAudience, subject, signal)
   let source = subject
   if (exchanged.refused !== null && !force) {
     source = await optiplyToken(true)
-    exchanged = await exchangeAtSts(client, auth.stsAudience, source, signal)
+    exchanged = await exchangeAtSts(client, stsAudience, source, signal)
   }
   if (exchanged.refused !== null) {
     throw new ConnectorError(

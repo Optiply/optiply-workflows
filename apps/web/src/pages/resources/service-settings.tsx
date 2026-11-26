@@ -582,8 +582,6 @@ const OPTIPLY_SIGN_IN = {
   loginUrl: 'https://login.optiply.com/',
   audience: 'https://api.optiply.com/internal',
   scope: 'openid email offline_access',
-  stsAudience:
-    '//iam.googleapis.com/projects/429012531216/locations/global/workloadIdentityPools/data-platform-users/providers/auth0',
 } as const
 
 /**
@@ -627,14 +625,12 @@ function OptiplyDataPlatformSignIn({ props, resourceId }: { props: FieldsProps; 
           <Input {...text('scope')} />
         </Field>
       </Grid>
-      <Field
-        label="Identity pool"
-        hint="The workload identity pool provider Google STS exchanges the Optiply token at (the data platform's)."
-      >
-        <Input {...text('stsAudience')} data-testid="optiply-sts-audience" />
-      </Field>
       <RedirectUri resourceId={resourceId} />
       <div className="space-y-1 text-xs text-muted" data-testid="bigquery-optiply-note">
+        <p>
+          Each person's Optiply sign-in is exchanged at Google for their identity in the data platform's
+          identity pool (<code className="text-ink">data-platform-users</code>; fixed).
+        </p>
         <p>
           Each person connects their own Optiply account; queries see only the webshops they are a member of,
           e.g.{' '}

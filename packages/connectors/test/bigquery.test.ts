@@ -549,7 +549,7 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
       {
         location: 'EU',
         projectId: 'optiply-workflows',
-        auth: { type: 'optiply', clientId: 'spa-client', stsAudience: fake.stsAudience },
+        auth: { type: 'optiply', clientId: 'spa-client' },
         ...config,
       },
       {},
@@ -677,6 +677,22 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
     expect(fake.apiCalls('dryRun').at(-1)!.authorization).toMatch(/^Bearer fed-/)
   })
 
+  it("always exchanges at the data platform's pool: a pool in the settings is ignored", async () => {
+    const { credentials } = account('optiply.kim')
+    const res = optiply({
+      auth: {
+        type: 'optiply',
+        clientId: 'spa-client',
+        stsAudience:
+          '//iam.googleapis.com/projects/evil/locations/global/workloadIdentityPools/p/providers/x',
+      },
+    })
+    await query(res, credentials)
+    expect(fake.stsCalls().map((r) => (r.body as Record<string, string>).audience)).toEqual([
+      fake.stsAudience,
+    ])
+  })
+
   it('needs the project jobs run in', async () => {
     const { credentials } = account('optiply.jan')
     expect(await testResource(connector, optiply({ projectId: undefined }), { credentials })).toMatchObject({
@@ -707,13 +723,6 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
         tokens: 'perUser',
       },
     })
-    // Only a workload identity pool provider can be the exchange's audience.
-    expect(
-      httpConfigFor('bigquery', {
-        projectId: 'p',
-        auth: { type: 'optiply', clientId: 'c', stsAudience: 'https://evil.example.com/' },
-      }),
-    ).toBeNull()
   })
 })
 

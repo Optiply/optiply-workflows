@@ -84,7 +84,12 @@ export class FakeBigQuery {
 
   get endpoints() {
     const base = `http://127.0.0.1:${(this.server!.address() as AddressInfo).port}`
-    return { apiUrl: `${base}/bigquery/v2`, tokenUrl: `${base}/token`, stsUrl: `${base}/sts/v1/token` }
+    return {
+      apiUrl: `${base}/bigquery/v2`,
+      tokenUrl: `${base}/token`,
+      stsUrl: `${base}/sts/v1/token`,
+      stsAudience: this.stsAudience,
+    }
   }
 
   script(match: string | RegExp, job: FakeJob): void {
