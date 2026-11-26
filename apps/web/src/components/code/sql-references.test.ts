@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { type EditorSqlSchema, referencedTables } from './sql-references'
+import { type EditorSqlSchema, referencedTables, tablesInSchema } from './sql-references'
 
 const table = (schema: string, name: string, insert?: string): EditorSqlSchema['tables'][number] => ({
   schema,
@@ -45,5 +45,20 @@ describe('the tables a query names', () => {
     )
     expect([...bare.referenced]).toEqual([product])
     expect(bare.aliases.size).toBe(0)
+  })
+})
+
+describe('the tables after a qualifier', () => {
+  const product = table('optiply-data-platform.agent_api', 'webshop_product', '`…`(…)')
+  const orders = table('shop', 'orders')
+  const schema: EditorSqlSchema = { tables: [product, orders] }
+
+  it('matches a schema whole or by its last part, never a part in the middle', () => {
+    expect(tablesInSchema(schema, 'shop')).toEqual([orders])
+    expect(tablesInSchema(schema, 'agent_api')).toEqual([product])
+    expect(tablesInSchema(schema, 'Agent_API')).toEqual([product])
+    expect(tablesInSchema(schema, 'optiply-data-platform.agent_api')).toEqual([product])
+    expect(tablesInSchema(schema, 'optiply-data-platform')).toEqual([])
+    expect(tablesInSchema(schema, 'api')).toEqual([])
   })
 })

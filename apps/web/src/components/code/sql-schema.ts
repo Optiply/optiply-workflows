@@ -1,6 +1,6 @@
 import { sqlTableLabel, sqlTableName } from '@/lib/sql-schema'
 import { monaco } from './monaco'
-import { type EditorSqlSchema, lower, referencedTables } from './sql-references'
+import { type EditorSqlSchema, lower, referencedTables, tablesInSchema } from './sql-references'
 
 // SQL completions from a database resource's tables and columns (session 57), per model: table names (with their
 // schema where it isn't the usual one), a table's or alias's columns after `name.`, a schema's tables after
@@ -53,15 +53,35 @@ function register(): void {
         const q = lower(qualifier)
         const table = aliases.get(q) ?? byName.get(q)
         if (table) return { suggestions: table.columns.map((c) => column(c, table.name)) }
-        const inSchema = schema.tables.filter((t) => lower(t.schema) === q)
+        // A table function's call replaces the whole qualified name typed so far (`agent_api.` alone would name
+        // the billing project's dataset): filtered by what was typed, inserted as the full call.
+        const typed = /[`"\w.-]+$/.exec(line)?.[0] ?? ''
+        const whole = new monaco.Range(
+          position.lineNumber,
+          position.column - typed.length,
+          position.lineNumber,
+          position.column,
+        )
+        const prefix = typed.slice(0, typed.length - word.word.length)
         return {
-          suggestions: inSchema.map((t) => ({
-            label: t.name,
-            kind: monaco.languages.CompletionItemKind.Struct,
-            insertText: t.name,
-            detail: `${t.columns.length} columns`,
-            range,
-          })),
+          suggestions: tablesInSchema(schema, qualifier).map((t) =>
+            t.insert
+              ? {
+                  label: t.name,
+                  kind: monaco.languages.CompletionItemKind.Function,
+                  insertText: t.insert,
+                  filterText: `${prefix}${t.name}`,
+                  detail: `function · ${t.columns.length} columns`,
+                  range: whole,
+                }
+              : {
+                  label: t.name,
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: t.name,
+                  detail: `${t.columns.length} columns`,
+                  range,
+                },
+          ),
         }
       }
       const several = new Set(schema.tables.map((t) => t.schema)).size > 1

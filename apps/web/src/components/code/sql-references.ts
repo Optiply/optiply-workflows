@@ -19,6 +19,18 @@ export const lower = (s: string) => s.toLowerCase()
  * The query's `from` / `join` tables, by name and by alias: `orders o`, `public.orders AS o`, and a table function's
  * call `` `project.dataset.fn`('…') p ``.
  */
+/**
+ * The tables after `qualifier.`: a schema's, matched whole or by its last part (`agent_api.` for the data platform's
+ * `optiply-data-platform.agent_api`).
+ */
+export function tablesInSchema(schema: EditorSqlSchema, qualifier: string): EditorSqlSchema['tables'] {
+  const q = lower(qualifier)
+  return schema.tables.filter((t) => {
+    const s = lower(t.schema)
+    return s === q || s.endsWith(`.${q}`)
+  })
+}
+
 export function referencedTables(text: string, schema: EditorSqlSchema) {
   const byName = new Map<string, EditorSqlSchema['tables'][number]>()
   for (const t of schema.tables) {
