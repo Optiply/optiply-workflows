@@ -396,18 +396,13 @@ async function federatedToken(
 
   let exchanged = await exchangeAtSts(client, stsAudience, subject, signal)
   let source = subject
-  if (exchanged.refused !== null && !force) {
+  // Only a refused token is worth a fresh one; a refresh can't fix a wrong app, a busy STS or an outage, and each one
+  // spends the person's refresh token at Auth0.
+  if (exchanged.refused !== null && exchanged.error === 'invalid_grant' && !force) {
     source = await optiplyToken(true)
     exchanged = await exchangeAtSts(client, stsAudience, source, signal)
   }
-  if (exchanged.refused !== null) {
-    throw new ConnectorError(
-      'connection',
-      `Google refused to exchange your Optiply sign-in for data platform access (${exchanged.refused}). ` +
-        'Check that the resource uses the right Optiply app and identity pool, or connect your account again.',
-      { status: exchanged.status },
-    )
-  }
+  if (exchanged.refused !== null) throw stsError(exchanged)
   const expiresAt = Math.min(
     Date.now() + exchanged.expiresIn * 1000,
     jwtExpiry(source) ?? Number.POSITIVE_INFINITY,
@@ -422,7 +417,39 @@ async function federatedToken(
 
 type StsResult =
   | { refused: null; token: string; expiresIn: number }
-  | { refused: string; status: number; token?: undefined; expiresIn?: undefined }
+  | {
+      refused: string
+      status: number
+      /** The OAuth error code (`invalid_grant`, `invalid_target`, …), when Google sent one. */
+      error: string | undefined
+      token?: undefined
+      expiresIn?: undefined
+    }
+
+/** Why the exchange failed, worded by what the person can do about it. */
+function stsError(failed: Extract<StsResult, { refused: string }>): ConnectorError {
+  const details = { status: failed.status, error: failed.error }
+  if (failed.status === 429 || failed.status >= 500) {
+    return new ConnectorError(
+      'connection',
+      `Google's token service couldn't exchange your Optiply sign-in right now (${failed.refused}). Try again shortly.`,
+      details,
+    )
+  }
+  if (failed.error === 'invalid_grant') {
+    return new ConnectorError(
+      'connection',
+      `Google refused your Optiply sign-in for data platform access (${failed.refused}). Connect your account again.`,
+      details,
+    )
+  }
+  return new ConnectorError(
+    'connection',
+    `Google refused to exchange your Optiply sign-in for data platform access (${failed.refused}). ` +
+      "Check the resource's Optiply app and audience: the data platform's identity pool may not accept them.",
+    details,
+  )
+}
 
 /** One token exchange at Google STS. A refusal comes back (never with the response body quoted whole: it can echo the token). */
 async function exchangeAtSts(
@@ -471,7 +498,11 @@ async function exchangeAtSts(
     typeof body.error === 'string'
       ? `${body.error}${typeof body.error_description === 'string' ? `: ${body.error_description.slice(0, 200)}` : ''}`
       : `HTTP ${res.status}`
-  return { refused: reason, status: res.status }
+  return {
+    refused: reason,
+    status: res.status,
+    error: typeof body.error === 'string' ? body.error : undefined,
+  }
 }
 
 /** A JWT's `exp` in milliseconds, unverified (only to bound the cache); null when it isn't a JWT. */

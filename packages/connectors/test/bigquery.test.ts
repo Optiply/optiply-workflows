@@ -652,11 +652,33 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
     const err = await failure(query(optiply(), revoked))
     expect(err.code).toBe('connection')
     expect(err.message).toMatch(
-      /Google refused to exchange your Optiply sign-in.*invalid_grant: The token is invalid/,
+      /Google refused your Optiply sign-in.*invalid_grant: The token is invalid.*Connect your account again/,
     )
     expect(err.message).not.toContain('optiply.revoked')
     expect(asks).toEqual([false, true])
     expect(fake.apiCalls()).toHaveLength(0)
+  })
+
+  it("doesn't refresh the Optiply token for refusals a refresh can't fix, and says what to do", async () => {
+    for (const [status, body, message] of [
+      [
+        400,
+        { error: 'invalid_target', error_description: 'The audience is invalid' },
+        /invalid_target: The audience is invalid.*Optiply app and audience/,
+      ],
+      [429, { error: 'rate_limited' }, /right now \(rate_limited\)\. Try again shortly/],
+      [503, 'Service Unavailable', /right now \(HTTP 503\)\. Try again shortly/],
+    ] as const) {
+      const { credentials, asks } = account(`optiply.${status}`)
+      fake.requests.length = 0
+      fake.failExchange = { status, body, times: 2 }
+      const err = await failure(query(optiply(), credentials))
+      expect(err.code, String(status)).toBe('connection')
+      expect(err.message, String(status)).toMatch(message)
+      expect(asks, String(status)).toEqual([false]) // no fresh Optiply token
+      expect(fake.stsCalls(), String(status)).toHaveLength(1)
+      fake.failExchange = null
+    }
   })
 
   it('asks for a connected Optiply account when the query has none, before calling STS or BigQuery', async () => {

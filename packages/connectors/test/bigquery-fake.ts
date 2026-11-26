@@ -63,6 +63,8 @@ export class FakeBigQuery {
   stsIssued = 0
   /** The next STS exchange is refused (e.g. an Optiply token Auth0 has revoked), once. */
   refuseNextExchange = false
+  /** The next STS exchanges answer this instead (a wrong audience, a busy or failing STS), `times` times. */
+  failExchange: { status: number; body: unknown; times: number } | null = null
   /** An Optiply (Auth0) token STS exchanges for a Google token. */
   allowOptiplyToken(value: string): void {
     this.optiplyTokens.add(value)
@@ -198,6 +200,10 @@ export class FakeBigQuery {
       form.scope !== 'https://www.googleapis.com/auth/cloud-platform'
     ) {
       return { status: 400, body: { error: 'invalid_request', error_description: 'Bad exchange' } }
+    }
+    if (this.failExchange && this.failExchange.times > 0) {
+      this.failExchange.times--
+      return { status: this.failExchange.status, body: this.failExchange.body }
     }
     if (form.audience !== this.stsAudience) {
       return { status: 400, body: { error: 'invalid_target', error_description: 'Unknown audience' } }
