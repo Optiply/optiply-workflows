@@ -386,6 +386,84 @@ describe('workflows', () => {
     await env.db.update(users).set({ disabledAt: null }).where(eq(users.id, other.id))
   })
 
+  it("library queries use the publisher's account only at a pinned version", async () => {
+    // Admin connected mailpub in the test before.
+    const lib = data(await admin.mutate('libraryQueries.create', { slug: 'mail_me', name: 'Mail me' }))
+    const libRelease = async (resource: string) => {
+      const draft = data(await admin.query('libraryQueries.get', { id: lib.id }))
+      const saved = data(
+        await admin.mutate('libraryQueries.saveDraft', {
+          id: lib.id,
+          revision: draft.draftRevision,
+          definition: { schemaVersion: 1, resource, query: { path: 'me' }, params: [] },
+        }),
+      )
+      return data(
+        await admin.mutate('libraryQueries.publish', {
+          libraryQueryId: lib.id,
+          draftRevision: saved.revision,
+        }),
+      )
+    }
+    await libRelease('mailpub') // 1.0.0
+    const libWorkflow = async (slug: string, version: string, direct?: string) => {
+      const created = data(await admin.mutate('workflows.create', { slug, name: slug }))
+      const blocks = [
+        { name: 'startTrigger', type: 'startTrigger' },
+        ...(direct
+          ? [{ name: 'own', type: 'resourceQuery', config: { resource: direct, query: { path: 'me' } } }]
+          : []),
+        { name: 'lib', type: 'libraryQuery', config: { library: 'mail_me', version, params: {} } },
+        { name: 'reply', type: 'response', config: { status: '200', body: '{{ lib.data }}' } },
+      ]
+      const names = blocks.map((b) => b.name)
+      const saved = data(
+        await admin.mutate('workflows.saveDraft', {
+          id: created.id,
+          revision: 1,
+          definition: {
+            schemaVersion: 1,
+            blocks,
+            edges: names.slice(1).map((to, i) => ({ from: names[i]!, port: 'out', to })),
+          },
+        }),
+      )
+      return { id: created.id, revision: saved.revision as number }
+    }
+
+    // Pinned: vouched for like the workflow's own queries.
+    const pinnedWf = await libWorkflow('lib-pinned', '1.0.0')
+    data(
+      await admin.mutate('releases.publish', { workflowId: pinnedWf.id, draftRevision: pinnedWf.revision }),
+    )
+    expect(await runsAs(pinnedWf.id)).toBe(adminId)
+    expect(await runWorkflow('lib-pinned', 'live')).toMatchObject({
+      status: 'succeeded',
+      response: { body: { who: 'mailpub:admin' } },
+    })
+
+    // `latest` on a per-person resource: refused, as it could change after publishing.
+    const latestWf = await libWorkflow('lib-latest', 'latest')
+    const refused = await admin.mutate('releases.publish', {
+      workflowId: latestWf.id,
+      draftRevision: latestWf.revision,
+    })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toMatch(/Library query "mail_me" is used at its latest version/)
+
+    // `latest` on a shared one publishes; when the library later moves to a per-person resource, the live run
+    // doesn't hand the publisher's account to it, even though the workflow runs as them for its own query.
+    await libRelease('crm') // 1.0.1
+    const mixed = await libWorkflow('lib-mixed', 'latest', 'mailpub')
+    data(await admin.mutate('releases.publish', { workflowId: mixed.id, draftRevision: mixed.revision }))
+    expect(await runsAs(mixed.id)).toBe(adminId)
+    await libRelease('mailpub') // 1.0.2
+    expect(await runWorkflow('lib-mixed', 'live')).toMatchObject({
+      status: 'failed',
+      error: { message: expect.stringMatching(/nobody is behind this run/) },
+    })
+  })
+
   it('a live run on a resource switched to per-user accounts fails asking for a shared one', async () => {
     const id = await oauthResource('crm_switch', 'shared')
     await connect(id, null, 'crmswitch-shared-1')

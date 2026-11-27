@@ -698,7 +698,13 @@ export async function runLibraryQuery(
       )
     }
   }
-  const { data, metadata } = await runResourceQuery(definition.resource, definition.query, work, ctx, {
+  // A live run acts as its publisher only for what they published: a library query at `latest` may have changed since
+  // (anyone with Edit on it can publish), so it runs as nobody (M21 / §2.47).
+  const queryCtx =
+    ctx.actingAsPublisher && ref.version === 'latest'
+      ? { ...ctx, actingUserId: null, actingAsPublisher: false }
+      : ctx
+  const { data, metadata } = await runResourceQuery(definition.resource, definition.query, work, queryCtx, {
     evaluate: evaluateLibrary,
     timeoutMs: Math.min(work.timeoutMs, definition.timeoutMs ?? work.timeoutMs),
     ownTimeout: work.ownTimeout === true || definition.timeoutMs !== undefined,

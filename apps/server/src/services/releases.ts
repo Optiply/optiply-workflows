@@ -5,7 +5,9 @@ import {
   type Environment,
   environments,
   oauthTokens,
+  type Resource,
   resourceConfigs,
+  resources as resourcesTable,
   type Workflow,
   type WorkflowRelease,
   workflowReleases,
@@ -16,6 +18,7 @@ import {
   canonicalize,
   canonicalJson,
   definitionHash,
+  libraryCalls,
   nextScheduleFire,
   type PythonLock,
   parseWebhookAlias,
@@ -31,6 +34,7 @@ import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
 import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
+import { resolveLibraryRelease } from './library-queries'
 import { authFingerprint, authorizationCode, usesOwnCredentials } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { releaseLock } from './python-envs'
@@ -306,7 +310,26 @@ async function checkReleasable(
   // release live (`runs_as`). So they must have connected it in every environment they can use, and a release from
   // Git (nobody makes it live) can't use such a resource.
   let runsAs: string | null = null
-  if (resources.length) {
+  // Library queries (M21) at a pinned version are part of what's vouched for: that release can't change. One at
+  // `latest` follows whatever is published to the library later, so it never uses the publisher's account (the engine
+  // runs it as nobody); one whose live release needs a person's account is refused here rather than failing live.
+  const pinned: Resource[] = []
+  const latest: { library: string; resource: Resource }[] = []
+  for (const call of libraryCalls(definition)) {
+    const found = await resolveLibraryRelease(db, call.library, call.version).catch(() => null)
+    if (!found) continue // `checkDefinition` reported it.
+    const [resource] = await db
+      .select()
+      .from(resourcesTable)
+      .where(eq(resourcesTable.slug, found.release.definition.resource))
+    if (!resource) continue
+    if (call.version === 'latest') latest.push({ library: call.library, resource })
+    else pinned.push(resource)
+  }
+  const candidates = [
+    ...new Map([...resources, ...pinned, ...latest.map((l) => l.resource)].map((r) => [r.id, r])).values(),
+  ]
+  if (candidates.length) {
     const configs = await db
       .select({
         id: resourceConfigs.id,
@@ -319,15 +342,24 @@ async function checkReleasable(
       .where(
         inArray(
           resourceConfigs.resourceId,
-          resources.map((r) => r.id),
+          candidates.map((r) => r.id),
         ),
       )
+    const ownCredentials = (c: (typeof configs)[number]) =>
+      usesOwnCredentials(candidates.find((r) => r.id === c.resourceId)!.type, effectiveConfig(c))
+    for (const { library, resource } of latest) {
+      if (configs.some((c) => c.resourceId === resource.id && ownCredentials(c))) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Library query "${library}" is used at its latest version, and its resource "${resource.slug}" uses each person's own account. Pick a version of it: a live run uses the publisher's account only for what they published.`,
+        })
+      }
+    }
     // A per-user OAuth account, or a custom auth flow whose form step asks each person to sign in.
-    const own = configs.filter((c) =>
-      usesOwnCredentials(resources.find((r) => r.id === c.resourceId)!.type, effectiveConfig(c)),
-    )
+    const vouched = new Set([...resources, ...pinned].map((r) => r.id))
+    const own = configs.filter((c) => vouched.has(c.resourceId) && ownCredentials(c))
     if (own.length && !python.actorUserId) {
-      const resource = resources.find((r) => r.id === own[0]!.resourceId)!
+      const resource = candidates.find((r) => r.id === own[0]!.resourceId)!
       throw new TRPCError({
         code: 'BAD_REQUEST',
         message: `Resource "${resource.slug}" uses each person's own account, and a release deployed from Git has nobody whose account its live runs could use. Publish it on the instance (its live runs then use your account), or give the resource a shared account.`,
@@ -353,7 +385,7 @@ async function checkReleasable(
           ),
         )
       for (const c of needed) {
-        const resource = resources.find((r) => r.id === c.resourceId)!
+        const resource = candidates.find((r) => r.id === c.resourceId)!
         const token = connected.find((t) => t.resourceConfigId === c.id)
         const ok =
           token?.status === 'active' &&
