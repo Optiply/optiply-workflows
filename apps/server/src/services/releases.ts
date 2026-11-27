@@ -596,11 +596,10 @@ async function checkWebhookSettings(
 
 /** Points the workflow at the release and projects its triggers. Runs in the caller's transaction. */
 async function makeLive(tx: Tx, workflowId: string, release: WorkflowRelease, plan: ReleasePlan, now: Date) {
-  // Whoever makes it live vouches with their own accounts, also when rolling back to someone else's release.
-  if (release.runsAs !== plan.runsAs) {
-    await tx.update(workflowReleases).set({ runsAs: plan.runsAs }).where(eq(workflowReleases.id, release.id))
-    release.runsAs = plan.runsAs
-  }
+  // Whoever makes it live vouches with their own accounts, also when rolling back to someone else's release. Always
+  // written (under the workflow's row lock): `release` was read before it, so another rollback may have changed it.
+  await tx.update(workflowReleases).set({ runsAs: plan.runsAs }).where(eq(workflowReleases.id, release.id))
+  release.runsAs = plan.runsAs
   await tx.update(workflows).set({ liveReleaseId: release.id }).where(eq(workflows.id, workflowId))
   // The alias was checked before the transaction; the unique index catches another workflow taking it meanwhile.
   await uniqueOr('Another workflow just took this webhook alias', () =>
