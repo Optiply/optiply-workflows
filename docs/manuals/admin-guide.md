@@ -443,7 +443,7 @@ them, with their webshops and their daily query costs.
 > the data platform, a custom sign-in with a form) act as whoever made that release live: anyone who may start the
 > workflow (its webhook, an app, the API) reaches what that person's account can. Publishing needs that person to
 > have connected their account in every environment they can use; rolling back makes the person rolling back the one
-> it runs as. If they leave or are disabled, its runs fail until someone publishes it again. Keep Edit on such
+> it runs as. If they leave or are disabled, its runs fail until someone makes it live again as themselves (Publish ▾ → Make live again). Keep Edit on such
 > workflows to the people whose accounts should be used.
 
 > **Tip:** Grant the role person by person. A grant to the whole identity pool would let any Optiply customer run

@@ -477,7 +477,7 @@ function onPublishersBehalf(db: Db, credentials: CredentialSource, publisherId: 
     const again = err.details.reason === 'not_connected' ? '' : ' again'
     throw new ConnectorError(
       'auth_required',
-      `This workflow's live runs use the own account of ${who}, who made this release live: they need to ${act} this resource${again} in this environment, or someone publishes it again with theirs. (${err.message})`,
+      `This workflow's live runs use the own account of ${who}, who made this release live: they need to ${act} this resource${again} in this environment, or someone else makes it live again with theirs (Publish ▾ → Make live again). (${err.message})`,
       { ...err.details, publisher: true },
     )
   }

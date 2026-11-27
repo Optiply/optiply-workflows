@@ -1534,8 +1534,9 @@ release then shows **Runs as** your name. Whoever publishes or rolls back later 
 
 **A live run says it uses someone's own account and they need to connect it.**
 The person the release runs as has disconnected, needs to reconnect, or no longer has access. They connect again, or
-someone else publishes the workflow so it runs as them. A release published before this feature, or deployed from
-Git, runs as nobody: publish it again.
+someone else makes it live again as themselves: **Publish ▾ → Make live again**, or **Run as me** on the live
+release in the Releases tab. A release published before this feature, or deployed from Git, runs as nobody: make it
+live again the same way.
 
 **The editor says "Offline: changes will sync".**
 Your connection dropped. Keep working; your changes are sent when it's back. If it says **Disconnected: reload**,

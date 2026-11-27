@@ -439,7 +439,7 @@ export function credentialsFor(
       async accessToken() {
         throw new ConnectorError(
           'auth_required',
-          "This resource uses each person's own account, and nobody is behind this run: a live run uses the account of whoever published the workflow, and this release has none (published before that, from Git, or that person can no longer sign in). Publish it again, or use a resource with a shared account.",
+          "This resource uses each person's own account, and nobody is behind this run: a live run uses the account of whoever published the workflow, and this release has none (published before that, from Git, or that person can no longer sign in). Make it live again as you (Publish ▾ → Make live again), or use a resource with a shared account.",
           {
             reason: 'no_user',
             account: 'user',

@@ -377,6 +377,18 @@ describe('workflows', () => {
     )
     await connect(id, other.id, 'mailpub-admin2-2')
 
+    // Publishing the unchanged draft re-vouches for the live release when it would run as someone else.
+    data(await admin.mutate('releases.publish', { workflowId: mailWf.id, draftRevision: mailWf.revision }))
+    expect(await runsAs(mailWf.id)).toBe(adminId)
+    const again = await admin.mutate('releases.publish', {
+      workflowId: mailWf.id,
+      draftRevision: mailWf.revision,
+    })
+    expect(again.body.error?.message).toMatch(/Nothing changed since the live release/)
+    // And making the live release live again does the same.
+    data(await admin2.mutate('releases.setLive', { workflowId: mailWf.id, releaseId: first.id }))
+    expect(await runsAs(mailWf.id)).toBe(other.id)
+
     // Someone who can no longer sign in isn't acted as.
     await env.db.update(users).set({ disabledAt: new Date() }).where(eq(users.id, other.id))
     expect(await runWorkflow('mailpub-live', 'live')).toMatchObject({

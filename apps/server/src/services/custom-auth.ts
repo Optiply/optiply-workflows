@@ -265,7 +265,7 @@ function customFlow(
   if (perUser && target.userId === null) {
     const nobody = needSignIn(
       'no_user',
-      'This resource asks each person to sign in, and nobody is behind this run: a live run uses the sign-in of whoever published the workflow, and this release has none (published before that, from Git, or that person can no longer sign in). Publish it again, or use a resource that signs in on its own.',
+      'This resource asks each person to sign in, and nobody is behind this run: a live run uses the sign-in of whoever published the workflow, and this release has none (published before that, from Git, or that person can no longer sign in). Make it live again as you (Publish ▾ → Make live again), or use a resource that signs in on its own.',
     )
     return {
       source: {

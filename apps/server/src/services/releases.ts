@@ -92,6 +92,16 @@ export async function publishRelease(
       js: plan.js,
     })
     if ('unchanged' in release) {
+      // Publishing again what's live re-vouches for it when it would run as someone else (its publisher left, or a
+      // resource started asking for each person's account): the same as making it live again.
+      const [live] = await tx
+        .select()
+        .from(workflowReleases)
+        .where(eq(workflowReleases.id, locked.liveReleaseId!))
+      if (live && live.runsAs !== plan.runsAs) {
+        await makeLive(tx, workflow.id, live, plan, opts.now ?? new Date())
+        return live
+      }
       throw new TRPCError({
         code: 'CONFLICT',
         message: `Nothing changed since the live release, v${release.unchanged}`,

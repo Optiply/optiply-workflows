@@ -131,6 +131,22 @@ function ReleaseMenu({ workflow }: { workflow: Workflow }) {
         <MenuItem icon={<History />} onClick={() => useEditor.getState().showTab('releases')}>
           Release history
         </MenuItem>
+        {canSetLive && live && (
+          <MenuItem
+            icon={<KeyRound />}
+            onClick={async () => {
+              if (
+                await confirmDialog(
+                  `Make v${live.version} live again, as you? Its checks run again, and resources that sign in with each person’s own account use yours in its live runs (connect them first).`,
+                )
+              ) {
+                setLive.mutate({ workflowId: workflow.id, releaseId: live.id })
+              }
+            }}
+          >
+            Make v{live.version} live again
+          </MenuItem>
+        )}
         {canSetLive && previous && (
           <MenuItem
             icon={<Undo2 />}
@@ -429,6 +445,25 @@ function ReleaseRow({
             onClick={onCompare}
           >
             <GitCompare className="size-3.5" /> Compare
+          </Button>
+        )}
+        {canSetLive && release.live && release.runsAs && release.runsAs.id !== me.id && (
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={setLive.isPending}
+            title="Make this release live again as you: its live runs then use your own accounts"
+            onClick={async () => {
+              if (
+                await confirmDialog(
+                  `Run v${release.version} as you instead of ${release.runsAs!.name}? Resources that sign in with each person’s own account will use yours in its live runs (connect them first).`,
+                )
+              ) {
+                setLive.mutate({ workflowId: workflow.id, releaseId: release.id })
+              }
+            }}
+          >
+            <KeyRound className="size-3.5" /> Run as me
           </Button>
         )}
         {canSetLive && !release.live && (
