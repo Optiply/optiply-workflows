@@ -137,7 +137,21 @@ export async function deployWorkflowFromGit(
 ): Promise<WorkflowRelease | null> {
   const definition = canonicalize(opts.definition)
   const hash = await definitionHash(definition)
-  const plan = await checkReleasable(db, null, opts.workflow, definition, { actorUserId: null })
+  // Nothing to make live when the definition is the live one (a new name or description, say): its checks are for
+  // a new release, and one that runs as its publisher (published before it was protected) must keep doing so.
+  const liveHash = async (q: Db | Tx, liveReleaseId: string | null) =>
+    liveReleaseId
+      ? (
+          await q
+            .select({ hash: workflowReleases.definitionHash })
+            .from(workflowReleases)
+            .where(eq(workflowReleases.id, liveReleaseId))
+        )[0]?.hash
+      : undefined
+  const plan =
+    (await liveHash(db, opts.workflow.liveReleaseId)) === hash
+      ? null
+      : await checkReleasable(db, null, opts.workflow, definition, { actorUserId: null })
   return db.transaction(async (tx) => {
     const [locked] = await tx.select().from(workflows).where(eq(workflows.id, opts.workflow.id)).for('update')
     if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The workflow was deleted meanwhile' })
@@ -153,6 +167,10 @@ export async function deployWorkflowFromGit(
           : {}),
       })
       .where(eq(workflows.id, locked.id))
+    if (!plan) {
+      if ((await liveHash(tx, locked.liveReleaseId)) === hash) return null
+      throw new TRPCError({ code: 'CONFLICT', message: 'The live release changed meanwhile; deploy again' })
+    }
     const release = await insertRelease(tx, locked, definition, hash, {
       notes: opts.notes,
       createdBy: null,
@@ -380,7 +398,7 @@ async function checkReleasable(
       const resource = candidates.find((r) => r.id === own[0]!.resourceId)!
       throw new TRPCError({
         code: 'BAD_REQUEST',
-        message: `Resource "${resource.slug}" uses each person's own account, and a release deployed from Git has nobody whose account its live runs could use. Publish it on the instance (its live runs then use your account), or give the resource a shared account.`,
+        message: `Resource "${resource.slug}" uses each person's own account, and a release deployed from Git has nobody whose account its live runs could use. Unprotect the workflow and publish it on the instance (its live runs then use your account), or give the resource a shared account.`,
       })
     }
     const actor = python.actorUserId

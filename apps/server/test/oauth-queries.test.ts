@@ -15,10 +15,12 @@ import {
   workflowReleases,
   workflows,
 } from '@ow/db'
+import type { WorkflowDefinition } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { authFingerprint, saveTokens } from '../src/services/oauth-tokens'
+import { deployWorkflowFromGit } from '../src/services/releases'
 import { startWorker } from '../src/worker'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
@@ -398,6 +400,32 @@ describe('workflows', () => {
       error: { message: expect.stringMatching(/nobody is behind this run/) },
     })
     await env.db.update(users).set({ disabledAt: null }).where(eq(users.id, other.id))
+  })
+
+  it('a Git deploy keeps a release that runs as its publisher, and refuses a new one', async () => {
+    const [wf] = await env.db.select().from(workflows).where(eq(workflows.slug, 'mailpub-live'))
+    const [live] = await env.db
+      .select()
+      .from(workflowReleases)
+      .where(eq(workflowReleases.id, wf!.liveReleaseId!))
+    const deploy = (definition: WorkflowDefinition) =>
+      deployWorkflowFromGit(env.db, {
+        workflow: wf!,
+        name: 'Renamed in Git',
+        description: null,
+        definition,
+        commit: 'abc1234',
+        notes: null,
+      })
+    // Only the name changed: nothing to make live, nothing refused.
+    expect(await deploy(live!.definition)).toBeNull()
+    expect(await runsAs(wf!.id)).toBe(live!.runsAs)
+    // A new definition has nobody to run as.
+    const changed = {
+      ...live!.definition,
+      blocks: [...live!.definition.blocks, { name: 'extra', type: 'code', config: { code: 'return 1' } }],
+    } as WorkflowDefinition
+    await expect(deploy(changed)).rejects.toThrow(/Unprotect the workflow and publish it on the instance/)
   })
 
   it("refuses to publish on a connection that runs out and can't be renewed", async () => {

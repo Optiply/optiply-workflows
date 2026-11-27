@@ -1624,7 +1624,9 @@ service account), which need other teams' work; those remain possible as separat
   use. `checkReleasable` sets `plan.runsAs` = the actor when the definition uses such a resource (`usesOwnCredentials`
   on any of its configs), null otherwise; `makeLive` writes it onto the release, so publishing and rollback
   (`setLiveRelease`) both make the person doing it vouch with their own account. Releases from Git (no actor) are
-  refused when they use such a resource ("Publish it on the instance").
+  refused when they use such a resource ("Unprotect the workflow and publish it on the instance"); a Git deploy that
+  doesn't change the live definition (a new name, say) skips the release checks, so a release that runs as its
+  publisher stays live.
 - **The check:** the actor needs an `oauth_tokens` row of their own (`status` active, `consent_hash` = the current
   `authFingerprint`) for every such config in every environment they can use (`access.canUseEnvironment`; a webhook
   can pick any environment). Otherwise "… will use yours. Connect your account to it in <env> first" ("Sign in" for
