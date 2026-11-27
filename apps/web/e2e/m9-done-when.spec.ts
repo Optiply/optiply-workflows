@@ -371,6 +371,28 @@ test("a per-user resource uses each viewer's own account in an app", async ({ pa
   await second.reload()
   await expect(second.getByText('Mailbox: grace')).toBeVisible()
   await second.context().close()
+
+  // A workflow on it publishes once the publisher has connected: its live runs use their account.
+  const wf = await trpcMutate<{ id: string }>(page, 'workflows.create', {
+    slug: `mailwf-${t}`,
+    name: 'Mail WF',
+  })
+  const saved = await trpcMutate<{ revision: number }>(page, 'workflows.saveDraft', {
+    id: wf.id,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      blocks: [
+        { name: 'startTrigger', type: 'startTrigger' },
+        { name: 'me', type: 'resourceQuery', config: { resource: `mail_${t}`, query: { path: 'me' } } },
+      ],
+      edges: [{ from: 'startTrigger', port: 'out', to: 'me' }],
+    },
+  })
+  await trpcMutate(page, 'releases.publish', { workflowId: wf.id, draftRevision: saved.revision })
+  await page.goto(`/workflows/${wf.id}`)
+  await page.getByTestId('release-status').click()
+  await expect(page.getByTestId('release-runs-as')).toContainText('Runs as')
 })
 
 async function newViewer(browser: Browser): Promise<Page> {

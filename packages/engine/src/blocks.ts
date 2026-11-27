@@ -40,6 +40,8 @@ export interface BlockContext {
   environmentId: string
   /** See `ExecuteRunOptions.actingUserId`. */
   actingUserId: string | null
+  /** See `ExecuteRunOptions.actingAsPublisher`. */
+  actingAsPublisher: boolean
   /** See `ExecuteRunOptions.currentUserId` (M21). */
   currentUserId: string | null
   services: EngineServices
@@ -551,7 +553,10 @@ export async function runResourceQuery(
 ): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
   let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
   try {
-    target = await ctx.services.resources.resolve(slug, ctx.environmentId, { actingUserId: ctx.actingUserId })
+    target = await ctx.services.resources.resolve(slug, ctx.environmentId, {
+      actingUserId: ctx.actingUserId,
+      asPublisher: ctx.actingAsPublisher,
+    })
   } catch (err) {
     if (err instanceof BlockFailure) throw err
     throw new BlockFailure('resource', `Resource "${slug}" is unavailable: ${(err as Error).message}`)

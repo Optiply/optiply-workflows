@@ -113,6 +113,8 @@ async function publish(page: Page, notes: string, version?: string) {
   await page.getByRole('button', { name: 'Publish', exact: true }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
+  // Live runs use the publisher's own accounts for resources that connect one per person.
+  await expect(dialog.getByTestId('publish-runs-as')).toContainText('use yours in its live runs')
   if (version) await dialog.getByText(version, { exact: true }).click()
   await dialog.locator('textarea').fill(notes)
   await page.getByTestId('publish-confirm').click()

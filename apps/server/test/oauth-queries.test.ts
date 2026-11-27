@@ -5,7 +5,16 @@
  */
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { createDb, groups, permissions, resourceConfigs, users, workflowReleases, workflows } from '@ow/db'
+import {
+  createDb,
+  groups,
+  oauthTokens,
+  permissions,
+  resourceConfigs,
+  users,
+  workflowReleases,
+  workflows,
+} from '@ow/db'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -358,6 +367,15 @@ describe('workflows', () => {
       status: 'succeeded',
       response: { body: { who: 'mailpub:admin2' } },
     })
+
+    // Their account gone: the run's error names them rather than "your account".
+    await env.db.delete(oauthTokens).where(eq(oauthTokens.userId, other.id))
+    const named = await runWorkflow('mailpub-live', 'live')
+    expect(named).toMatchObject({ status: 'failed' })
+    expect(named.error.message).toMatch(
+      /use the own account of .+, who made this release live: they need to connect their own account to this resource in this environment/,
+    )
+    await connect(id, other.id, 'mailpub-admin2-2')
 
     // Someone who can no longer sign in isn't acted as.
     await env.db.update(users).set({ disabledAt: new Date() }).where(eq(users.id, other.id))

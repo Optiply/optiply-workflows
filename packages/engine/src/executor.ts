@@ -200,6 +200,7 @@ export class RunExecutor {
         definition,
         environmentId: run.environmentId,
         actingUserId,
+        actingAsPublisher: !!run.releaseId && actingUserId !== null,
         currentUserId: run.createdBy,
         input: run.input as RunInput,
         globals: {

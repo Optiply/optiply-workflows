@@ -1,7 +1,7 @@
 import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
-import { ChevronDown, Clock, GitCompare, History, Rocket, Undo2, Webhook } from 'lucide-react'
+import { ChevronDown, Clock, GitCompare, History, KeyRound, Rocket, Undo2, Webhook } from 'lucide-react'
 import { useState } from 'react'
 import { CompareReleasesDialog } from '@/components/compare-releases'
 import { confirmDialog } from '@/components/confirm'
@@ -16,6 +16,12 @@ type Workflow = RouterOutputs['workflows']['get']
 type Release = RouterOutputs['releases']['list'][number]
 
 const appRoute = getRouteApi('/app')
+
+/** For a rollback's confirmation: a release that runs as someone will run as whoever makes it live. */
+const runsAsYou = (release: Release) =>
+  release.runsAs
+    ? ' Resources that sign in with each person’s own account will use yours in its live runs (connect them first).'
+    : ''
 
 /** Refetches what a new live release changes. */
 function useRefreshReleases(workflowId: string) {
@@ -134,7 +140,7 @@ function ReleaseMenu({ workflow }: { workflow: Workflow }) {
                 : ''
               if (
                 await confirmDialog(
-                  `Roll back to v${previous.version}? Its webhook and schedules will run instead of v${live.version}.${emergency}`,
+                  `Roll back to v${previous.version}? Its webhook and schedules will run instead of v${live.version}.${runsAsYou(previous)}${emergency}`,
                 )
               ) {
                 setLive.mutate({ workflowId: workflow.id, releaseId: previous.id })
@@ -241,6 +247,13 @@ function PublishDialog({ workflow, onClose }: { workflow: Workflow; onClose: () 
           The draft becomes the live release: from now on its webhook and schedules run it
           {workflow.liveRelease ? ` instead of v${workflow.liveRelease.version}` : ''}. Editor runs keep using
           the draft.
+        </p>
+        <p className="flex gap-2 text-sm text-muted" data-testid="publish-runs-as">
+          <KeyRound className="mt-0.5 size-4 shrink-0" />
+          <span>
+            Resources that sign in with each person’s own account (such as the Optiply SDK) use <b>yours</b>{' '}
+            in its live runs, whoever or whatever starts them. Connect your account to them first.
+          </span>
         </p>
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium">Version</span>
@@ -435,7 +448,7 @@ function ReleaseRow({
                 : ''
               if (
                 await confirmDialog(
-                  `Make v${release.version} live? Its webhook and schedules will run${current}.${emergency}`,
+                  `Make v${release.version} live? Its webhook and schedules will run${current}.${runsAsYou(release)}${emergency}`,
                 )
               ) {
                 setLive.mutate({ workflowId: workflow.id, releaseId: release.id })
@@ -447,6 +460,15 @@ function ReleaseRow({
         )}
       </div>
       {release.notes && <p className="mt-1 text-sm whitespace-pre-wrap">{release.notes}</p>}
+      {release.runsAs && (
+        <p
+          className="mt-1 flex items-center gap-1.5 text-xs"
+          data-testid="release-runs-as"
+          title="Resources that sign in with each person’s own account use this person’s in its live runs: whoever makes a release live"
+        >
+          <KeyRound className="size-3.5 text-muted" /> Runs as {release.runsAs.name}
+        </p>
+      )}
       <p className="mt-1 text-xs text-muted">
         <ReleaseAuthor release={release} webUrl={git?.webUrl} /> ·{' '}
         {new Date(release.createdAt).toLocaleString()} ·{' '}
