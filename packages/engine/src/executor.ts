@@ -2,6 +2,7 @@ import type { CodeFetcher, PoolManager } from '@ow/connectors'
 import {
   type Db,
   environments,
+  users,
   type WorkflowRun,
   workflowDraftSnapshots,
   workflowReleases,
@@ -178,7 +179,7 @@ export class RunExecutor {
       })
       return
     }
-    const definition = await loadDefinition(db, run)
+    const { definition, actingUserId } = await loadDefinition(db, run)
     const [env] = await db.select().from(environments).where(eq(environments.id, run.environmentId))
     const [workflow] = await db
       .select({ name: workflows.name })
@@ -198,8 +199,8 @@ export class RunExecutor {
         runId: run.id,
         definition,
         environmentId: run.environmentId,
-        // Only a draft run has a person behind it (whoever ran it from the editor).
-        actingUserId: run.draftSnapshotId ? run.createdBy : null,
+        actingUserId,
+        actingAsPublisher: !!run.releaseId && actingUserId !== null,
         currentUserId: run.createdBy,
         input: run.input as RunInput,
         globals: {
@@ -380,14 +381,29 @@ export function shared<T>(
   })
 }
 
-async function loadDefinition(db: Db, run: WorkflowRun): Promise<WorkflowDefinition> {
+/**
+ * The run's definition, and whose own accounts its resources use: whoever started a draft run, or for a run of a
+ * release whoever made it live (`runs_as`), while they may still sign in. Null otherwise: nobody is behind it.
+ */
+async function loadDefinition(
+  db: Db,
+  run: WorkflowRun,
+): Promise<{ definition: WorkflowDefinition; actingUserId: string | null }> {
   if (run.releaseId) {
     const [release] = await db.select().from(workflowReleases).where(eq(workflowReleases.id, run.releaseId))
-    return release!.definition
+    let actingUserId: string | null = null
+    if (release!.runsAs) {
+      const [user] = await db
+        .select({ disabledAt: users.disabledAt, status: users.status })
+        .from(users)
+        .where(eq(users.id, release!.runsAs))
+      if (user && !user.disabledAt && user.status === 'active') actingUserId = release!.runsAs
+    }
+    return { definition: release!.definition, actingUserId }
   }
   const [snapshot] = await db
     .select()
     .from(workflowDraftSnapshots)
     .where(eq(workflowDraftSnapshots.id, run.draftSnapshotId!))
-  return snapshot!.definition
+  return { definition: snapshot!.definition, actingUserId: run.createdBy }
 }

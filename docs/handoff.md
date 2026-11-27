@@ -2009,6 +2009,36 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 63 steps (2026-11-27): workflows on the SDK and other per-person resources can be published (branch `feat/run-as-publisher`)
+
+The user: "with sdk and other block that work as sdk we should be able to publish the workflows". Publishing
+refused any workflow on a resource that signs in with each person's own account (the Optiply SDK, the
+Optiply_Data_Platform, per-user OAuth, custom flows with a form step). Asked how live runs get an account, the user
+chose **runs as the publisher** (over the shared service identities of the session 62 options doc, which wait on the
+Auth0 admin and the data team): `architecture.md` §2.47.
+
+- **Step 1a** (`d5e2886`): `workflow_releases.runs_as` (migration **0053**), set when a release is made live (publish
+  or rollback) to the person doing it, only when it uses such a resource; publishing needs their own connection
+  (active, current settings) in every environment they can use; Git deploys of such workflows are still refused; the
+  executor acts as `runs_as` while that user is active and not disabled; `releases.list` returns `runsAs`.
+- **Step 1b** (`b47f6b7`): the publish dialog's line, **Runs as <name>** on releases, rollback confirmations; a live
+  run's account error names the publisher (`onPublishersBehalf`). Screenshots before/after shown to the user.
+- **Step 1c:** docs (user and admin guides with a "who a published workflow runs as" note, connectors runbook,
+  README, `architecture.md` §2.47), PDFs rebuilt (they also pick up session 62's text), this section.
+- **Review:** security-auditor (1 High, 1 Low) and bug-hunter (2 Medium, 4 Low, 1 needs check); the user chose to
+  fix all, one commit each: `7e8c358` (library queries: pinned versions vouched, `latest` never runs as the
+  publisher and is refused on a per-person resource — the High, and the Medium of library-only workflows),
+  `08306b2` (webhook replies don't name the publisher), `5c9bb5a` (an unchanged publish or Make live again
+  re-vouches; Publish ▾ → Make live again, Run as me), `2487d7c` (the Connect button only for the publisher),
+  `949e942` (a connection that runs out and can't be renewed is refused), `552d841` (Git deploy: unchanged
+  definition skips the checks; "Unprotect …" message), `763b60b` (runs_as always written under the lock),
+  `fc657c7` (admins-only environment: "an admin makes it live again"). Full suites: server 762, engine 167,
+  definition 198, web 167, connectors 427, db 20; e2e releases + m9 on a fresh build.
+- **Next:** the PR. After the merge and
+  deploy: the user republishes nothing (no release had `runs_as` before); new SDK / data-platform workflows publish
+  once the publisher has connected. Specialist folder: re-copy `10-`/`11-` guides and `20-runbook-connectors.md`.
+- **Not done:** a test of the Git-deploy refusal message.
+
 ## 14. Session 62 steps (2026-11-26): BigQuery with each person's Optiply account (branch `feat/bigquery-optiply-signin`)
 
 The user asked for a resource that reads the **Optiply data platform** (BigQuery `optiply-data-platform.agent_api.*`)
@@ -2940,6 +2970,11 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Progress:** step 0 `11b334b` (with `122e32a` before it: the CLI's `login` no longer echoes the token, found when the user signed in on their stack). Step 1 `4b69a9b`: AI resources. **Plan change (step 1):** the AI resources are **M27's service connectors** (`SERVICE_TYPES` `anthropic`, `openai_compatible`; `AI_ACTIONS` in `services/actions.ts`), so the "AI block" is the **existing resource query block** on an AI resource and the app's AI query the existing resource query: no `type: 'ai'` block. The answer is the query's data (text, the extracted JSON, `{label|labels, reason}`), usage/model/cost/prompts its metadata. Code: `packages/connectors/src/ai/` (`core.ts` the actions and checks, `anthropic.ts` the SDK, `openai.ts` chat completions, `prices.ts`, `fake.ts`); `QueryContext.ai` (`AiRunContext`: `budget {spent, add}`, `tools` for the agent) and the `ai_*` error codes; `RunOptions.ai`. Found: SDK 1.x sends the key as `Authorization: Bearer` (not `x-api-key`); the SDK reads `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` from the environment unless given everything (we pass the key, base URL and `authToken: null`); undici's `fetch` doesn't take the SDK's `Headers` (plain headers passed); a private IP written in the base URL skips the guarded lookup (`checkBaseUrl`). Tests: `packages/connectors/test/ai.test.ts` (12), `apps/server/test/ai-resources.test.ts` (2). Steps 2–4 `2d3c660` (one commit: step 3's provider changes landed in `core.ts` before step 2 was committed): the run's budget (`RunAiBudget`, per execution, shared with function calls, from the checkpoints on resume), the run log line per AI call, `ow_ai_calls_total`/`ow_ai_tokens_total`/`ow_ai_cost_usd_total` (counted in the connectors: playground and apps too); the agent (`ai/agent.ts`; tools described and run by the engine's `aiToolHost` as child runs; tools are called workflows for permissions and the validator); apps already worked (no budget, no agent). Tests: connectors 396, engine 214, definition 195, app-runtime 41, server 631 + 1 skipped. Step 5 `974fe13`: the web (forms, the AI group, typed data in completions, the run view's AI section, the tools picker) and `m35-done-when.spec.ts` (2 passed); web unit 133; shots light and dark in session 39's scratchpad `m35-shots/` (`/private/tmp/claude-501/-Users-optiply-optiply-workflows/5a62e40c-a0f6-4e48-ae2d-a938c7c2f9b9/scratchpad/m35-shots/`). Step 6: the runbook `docs/runbooks/ai.md`, §2.38 "As built", §9ac. Step 7 `ac807b3`: the review (`code-review`, high): 10 found, 10 fixed (§2.38 "As built" lists them; the worst: redirects were followed past the private-network guard; OpenAI's API got `max_tokens` and `strict` schemas it refuses; a repeated tool-call id shared one child run). **Full e2e (before the fixes): 151 passed, 1 failed** in 33.5 min: `webhook-settings` (completions, the known flake from M32/M33; passes alone on the fixed build with `m35-done-when`, `editor`, `connectors`: 9 passed). Final suites on `ac807b3`: connectors 400, engine 214, definition 195, app-runtime 41, web 133, server 631 + 1 skipped; biome ci, typecheck, builds. **M35 is done** except the check by hand against Anthropic (§12 #44).
 
 ## 15. How to start the next session
+
+**Session 63 (2026-11-27):** branch `feat/run-as-publisher` (§14 "Session 63"): live runs of workflows on
+per-person resources (the SDK, the data platform) run as whoever published them. Steps 1a–1c and the 8 review fixes
+committed; open: the PR, then the deploy (migration 0053). The unattended-runs options doc is superseded by this choice
+for now (shared service resources stay possible later).
 
 **Session 62 (2026-11-26):** BigQuery with each person's Optiply account (PR #22, `4a3963a`) and its Tables panel
 for the data platform (PR #23, `cd7a111`) are **live: production runs `cd7a111`** (rollback `4a3963a`; VM and

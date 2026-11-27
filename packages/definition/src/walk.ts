@@ -90,6 +90,20 @@ export function usedLibraries(def: WorkflowDefinition): string[] {
   return [...slugs]
 }
 
+/** Every distinct library query reference (slug and version) the definition uses (M21), functions included. */
+export function libraryCalls(def: WorkflowDefinition): { library: string; version: string }[] {
+  const calls = new Map<string, { library: string; version: string }>()
+  for (const block of allBlocks(def)) {
+    const use = libraryCall(block)
+    if (use)
+      calls.set(`${use.call.library}@${use.call.version}`, {
+        library: use.call.library,
+        version: use.call.version,
+      })
+  }
+  return [...calls.values()]
+}
+
 /** User Task assignees written out in full (no `{{ }}`): emails (lowercased) and group names. */
 export function literalAssignees(def: WorkflowDefinition): { users: string[]; groups: string[] } {
   const users = new Set<string>()

@@ -368,10 +368,14 @@ export function sendRunReply(reply: FastifyReply, run: WorkflowRun) {
     return reply.type(type ?? 'application/json; charset=utf-8').send(JSON.stringify(response.body))
   }
   if (run.status === 'succeeded') return reply.code(200).send({ runId: run.id, status: run.status })
-  const error = run.error as { code?: string; message?: string } | null
+  const error = run.error as { code?: string; message?: string; details?: { publisher?: unknown } } | null
+  // Whoever calls a webhook may not be signed in: the publisher's name stays in the run's log.
+  const message = error?.details?.publisher
+    ? "The publisher's account for a resource this workflow uses can't be used right now. See the run's log."
+    : (error?.message ?? 'The run failed')
   return reply.code(500).send({
     runId: run.id,
     status: run.status,
-    error: error ? { code: error.code ?? 'failed', message: error.message ?? 'The run failed' } : null,
+    error: error ? { code: error.code ?? 'failed', message } : null,
   })
 }

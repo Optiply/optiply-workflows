@@ -413,7 +413,7 @@ Microsoft Teams, Salesforce, BigQuery, Snowflake (JDBC), SDK resources and gener
    | Choice | What happens |
    |---|---|
    | **One shared account** | Someone with Edit connects one account per environment; every query uses it. |
-   | **Each person's own account** | Each person connects their own; a query runs as whoever runs it. Workflows using such a resource can't be published (a live run has nobody to act as). |
+   | **Each person's own account** | Each person connects their own; a query runs as whoever runs it. A published workflow's live runs use the account of whoever published it (or rolled back to that release); they must have connected it first. |
 
 5. **Save**, then **Connect account** (or **Connect your account**). The panel shows the connected account, when it
    was connected and its scopes. **Disconnect** removes it and revokes it at the provider where possible.
@@ -426,8 +426,8 @@ Microsoft Teams, Salesforce, BigQuery, Snowflake (JDBC), SDK resources and gener
 the **Project** (where queries run and are billed: it's required here, as there's no key to take it from). The scopes
 are `openid email https://www.googleapis.com/auth/bigquery`. Each person's account needs the **BigQuery Job User** role
 in that project and access to the datasets it queries; queries then see only what that person may see, and BigQuery's
-job history and costs show who ran them. Workflows that run on their own (schedules, webhooks) need a resource with a
-shared account or a service account key.
+job history and costs show who ran them. Published workflows (schedules, webhooks) run as whoever published them;
+for a workflow that shouldn't depend on one person, use a resource with a shared account or a service account key.
 
 **BigQuery with each person's Optiply account (the Optiply data platform).** Set **Sign in with** to **Each person's
 Optiply account** and fill in the **Client ID** of the "Optiply Workflows" Auth0 app (it has no secret; its Allowed
@@ -436,8 +436,15 @@ Callback URLs must include the **Redirect URI** the form shows). Leave the other
 in with their Optiply login; queries see only the webshops that person is a member of in Optiply, for example
 ``SELECT * FROM `optiply-data-platform.agent_api.webshop_product`('<webshop uuid>')``. Before someone can run queries,
 grant them **BigQuery Job User** in the project for their data-platform identity, named by their Optiply email (the
-exact command is in the connectors runbook). Workflows that run on their own (schedules, webhooks) can't use this
-resource.
+exact command is in the connectors runbook). Published workflows (schedules, webhooks) run as whoever published
+them, with their webshops and their daily query costs.
+
+> **Who a published workflow runs as.** Live runs of a workflow that uses a per-person resource (the Optiply SDK,
+> the data platform, a custom sign-in with a form) act as whoever made that release live: anyone who may start the
+> workflow (its webhook, an app, the API) reaches what that person's account can. Publishing needs that person to
+> have connected their account in every environment they can use; rolling back makes the person rolling back the one
+> it runs as. If they leave or are disabled, its runs fail until someone makes it live again as themselves (Publish ▾ → Make live again). Keep Edit on such
+> workflows to the people whose accounts should be used.
 
 > **Tip:** Grant the role person by person. A grant to the whole identity pool would let any Optiply customer run
 > queries billed to the project.

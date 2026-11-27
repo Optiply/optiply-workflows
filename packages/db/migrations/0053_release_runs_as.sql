@@ -1,0 +1,2 @@
+ALTER TABLE "workflow_releases" ADD COLUMN "runs_as" uuid;--> statement-breakpoint
+ALTER TABLE "workflow_releases" ADD CONSTRAINT "workflow_releases_runs_as_users_id_fk" FOREIGN KEY ("runs_as") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;

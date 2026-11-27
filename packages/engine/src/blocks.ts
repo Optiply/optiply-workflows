@@ -40,6 +40,8 @@ export interface BlockContext {
   environmentId: string
   /** See `ExecuteRunOptions.actingUserId`. */
   actingUserId: string | null
+  /** See `ExecuteRunOptions.actingAsPublisher`. */
+  actingAsPublisher: boolean
   /** See `ExecuteRunOptions.currentUserId` (M21). */
   currentUserId: string | null
   services: EngineServices
@@ -551,7 +553,10 @@ export async function runResourceQuery(
 ): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
   let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
   try {
-    target = await ctx.services.resources.resolve(slug, ctx.environmentId, { actingUserId: ctx.actingUserId })
+    target = await ctx.services.resources.resolve(slug, ctx.environmentId, {
+      actingUserId: ctx.actingUserId,
+      asPublisher: ctx.actingAsPublisher,
+    })
   } catch (err) {
     if (err instanceof BlockFailure) throw err
     throw new BlockFailure('resource', `Resource "${slug}" is unavailable: ${(err as Error).message}`)
@@ -693,7 +698,13 @@ export async function runLibraryQuery(
       )
     }
   }
-  const { data, metadata } = await runResourceQuery(definition.resource, definition.query, work, ctx, {
+  // A live run acts as its publisher only for what they published: a library query at `latest` may have changed since
+  // (anyone with Edit on it can publish), so it runs as nobody (M21 / §2.47).
+  const queryCtx =
+    ctx.actingAsPublisher && ref.version === 'latest'
+      ? { ...ctx, actingUserId: null, actingAsPublisher: false }
+      : ctx
+  const { data, metadata } = await runResourceQuery(definition.resource, definition.query, work, queryCtx, {
     evaluate: evaluateLibrary,
     timeoutMs: Math.min(work.timeoutMs, definition.timeoutMs ?? work.timeoutMs),
     ownTimeout: work.ownTimeout === true || definition.timeoutMs !== undefined,

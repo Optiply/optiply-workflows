@@ -58,6 +58,17 @@ export function usesOwnCredentials(type: string, config: unknown): boolean {
 }
 
 /**
+ * Whether a person's own connection keeps working with nobody there to sign in again (a live run acting as its
+ * publisher): it doesn't run out, or it can be renewed (an OAuth refresh token, a custom flow's refresh steps).
+ */
+export function renewable(keyring: Keyring, type: string, config: unknown, row: OAuthToken): boolean {
+  if (!row.expiresAt) return true
+  const http = httpConfigFor(type, config)
+  if (http?.auth.type === 'custom') return http.auth.refreshSteps.length > 0
+  return !!decryptTokens(keyring, row).refreshToken
+}
+
+/**
  * The authorization-code settings of an HTTP resource config (REST's, or what another type connects with; defaults
  * applied), or null for any other config.
  */
@@ -407,8 +418,8 @@ export function oauthCredentials(
 
 /**
  * The credentials a query against this resource config uses, or undefined when it doesn't connect accounts. A
- * shared account is everyone's; on per-user resources, `actingUserId`'s own account is used, and a query nobody
- * runs (a live workflow run) fails asking for a resource with a shared account.
+ * shared account is everyone's; on per-user resources, `actingUserId`'s own account is used (a live workflow run's
+ * is whoever published it), and a query nobody is behind fails.
  */
 export function credentialsFor(
   deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
@@ -439,7 +450,7 @@ export function credentialsFor(
       async accessToken() {
         throw new ConnectorError(
           'auth_required',
-          "This resource uses each person's own account, and nobody is behind this run. Use a resource with a shared account in workflows that run on their own.",
+          "This resource uses each person's own account, and nobody is behind this run: a live run uses the account of whoever published the workflow, and this release has none (published before that, from Git, or that person can no longer sign in). Make it live again as you (Publish ▾ → Make live again), or use a resource with a shared account.",
           {
             reason: 'no_user',
             account: 'user',

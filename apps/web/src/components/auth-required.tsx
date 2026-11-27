@@ -16,8 +16,11 @@ export function AuthRequiredNote({
   onConnected,
   compact,
   appId,
+  meId,
 }: {
   need: AuthRequired
+  /** The signed-in person: a live run acting as someone else's account offers them no Connect button. */
+  meId?: string
   message: string
   onConnected?: () => void
   /** The app the query belongs to: its viewers may connect their own account without access to the resource. */
@@ -57,7 +60,12 @@ export function AuthRequiredNote({
           <KeyRound className="mt-0.5 size-4 shrink-0 text-accent" />
           <span>{message}</span>
         </p>
-        {need.account === 'user' && need.reason !== 'no_user' ? (
+        {need.publisherId && need.publisherId !== meId ? (
+          <span className="text-sm text-muted" data-testid="publisher-only">
+            Only the person it runs as can connect their account. Or make it live again as you: Publish ▾ →
+            Make live again.
+          </span>
+        ) : need.account === 'user' && need.reason !== 'no_user' ? (
           <Button size="sm" variant="primary" loading={busy} onClick={connect}>
             {form
               ? reconnect

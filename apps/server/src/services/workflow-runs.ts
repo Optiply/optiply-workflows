@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { getConnector } from '@ow/connectors'
+import { ConnectorError, type CredentialSource, getConnector } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
 import {
   configVars,
@@ -47,6 +47,7 @@ import { type Access, atLeast } from './permissions'
 import { pythonDiagnostics } from './python'
 import { toResolved } from './resources'
 import { decryptForRow } from './secrets'
+import { isAdmin } from './users'
 
 /** A refused request, with the HTTP status to answer with. */
 export class RunRequestError extends Error {
@@ -444,17 +445,66 @@ export function dbResourceProvider(db: Db, keyring: Keyring, sandbox: CodeRuntim
         )
       if (!row) throw new BlockFailure('resource', `Resource "${slug}" isn't configured in this environment`)
       const resolved = toResolved(keyring, row)
+      const credentials = credentialsFor(
+        { db, keyring, sandbox },
+        resource.type,
+        resolved,
+        opts?.actingUserId ?? null,
+      )
       return {
         connector,
         resource: resolved,
-        credentials: credentialsFor(
-          { db, keyring, sandbox },
-          resource.type,
-          resolved,
-          opts?.actingUserId ?? null,
-        ),
+        credentials:
+          credentials && opts?.asPublisher && opts.actingUserId
+            ? onPublishersBehalf(db, credentials, opts.actingUserId)
+            : credentials,
       }
     },
+  }
+}
+
+/**
+ * A live run's credentials, used on behalf of whoever made its release live: when their own account can't be used,
+ * the error names them (its own messages say "your", which reads as whoever looks at the run).
+ */
+export function onPublishersBehalf(
+  db: Db,
+  credentials: CredentialSource,
+  publisherId: string,
+): CredentialSource {
+  const rethrow = async (err: unknown): Promise<never> => {
+    if (!(err instanceof ConnectorError) || err.code !== 'auth_required' || err.details?.account !== 'user') {
+      throw err
+    }
+    const [user] = await db.select({ name: users.name }).from(users).where(eq(users.id, publisherId))
+    const who = user?.name ?? 'The person who made this release live'
+    const act = err.details.flow === 'form' ? 'sign in to' : 'connect their own account to'
+    const again = err.details.reason === 'not_connected' ? '' : ' again'
+    // An admins-only environment (Staging) the publisher may not use: only an admin can vouch for runs there.
+    const environmentId = typeof err.details.environmentId === 'string' ? err.details.environmentId : null
+    const [environment] = environmentId
+      ? await db
+          .select({ adminOnly: environments.adminOnly })
+          .from(environments)
+          .where(eq(environments.id, environmentId))
+      : []
+    const fix =
+      environment?.adminOnly && !(await isAdmin(db, publisherId))
+        ? `this environment is for admins only, so an admin makes it live again with theirs (Publish ▾ → Make live again)`
+        : `they need to ${act} this resource${again} in this environment, or someone else makes it live again with theirs (Publish ▾ → Make live again)`
+    throw new ConnectorError(
+      'auth_required',
+      `This workflow's live runs use the own account of ${who}, who made this release live: ${fix}. (${err.message})`,
+      { ...err.details, publisher: true, publisherId },
+    )
+  }
+  return {
+    ...(credentials.accessToken && {
+      accessToken: (o) => credentials.accessToken!(o).catch(rethrow),
+    }),
+    ...(credentials.authVariables && {
+      authVariables: (o) => credentials.authVariables!(o).catch(rethrow),
+    }),
   }
 }
 

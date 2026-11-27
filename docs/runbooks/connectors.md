@@ -265,9 +265,11 @@ BigQuery is a database resource (not HTTP through the core above), but it can si
     anything else (a wrong app or audience) → "… Check the resource's Optiply app and audience …" with no retry; STS
     busy or failing (429, 5xx) → "… right now (…). Try again shortly." with no retry; no Job User → BigQuery's `accessDenied` ("User does not have bigquery.jobs.create
     permission in project …"); not a member of the webshop → the function's own `no access: …` error (its membership
-    copy can lag by up to 2 hours). Each person's own account always: workflows that run on their own can't use it.
+    copy can lag by up to 2 hours). Each person's own account always: a published workflow runs as whoever published it.
 - **What fails how:** nobody connected → "Connect your account to this resource to use it." (Test connection and
-  queries, before any call to BigQuery); a scheduled run on a per-person resource → "nobody is behind this run"; an
+  queries, before any call to BigQuery); a live run of a release that runs as nobody (published before session 63, from Git, or its publisher disabled) →
+  "nobody is behind this run … Make it live again as you"; a live run whose publisher's account is gone → "This workflow's live
+  runs use the own account of <name>, who made this release live: they need to connect …"; an
   account without the role → BigQuery's own `accessDenied` ("User does not have bigquery.jobs.create permission …");
   a token BigQuery refuses is refreshed once; when Google refuses the refresh (access revoked, password changed),
   the account shows **Needs reconnecting**.

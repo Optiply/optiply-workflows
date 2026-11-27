@@ -101,7 +101,7 @@ export interface ResourceProvider {
   resolve(
     slug: string,
     environmentId: string,
-    opts?: { actingUserId?: string | null },
+    opts?: { actingUserId?: string | null; asPublisher?: boolean },
   ): Promise<{ connector: AnyConnector; resource: ResolvedResource; credentials?: CredentialSource }>
 }
 
@@ -220,10 +220,13 @@ export interface ExecuteRunOptions {
   definition: WorkflowDefinition
   environmentId: string
   /**
-   * Whose own accounts resources that connect one per person (OAuth) use: the person who started a draft run.
-   * Null for runs of a release, which nobody is behind (webhooks, schedules, child runs).
+   * Whose own accounts resources that connect one per person (OAuth, a custom flow's form) use: the person who
+   * started a draft run, or for a run of a release whoever made it live (`workflow_releases.runs_as`), as nobody is
+   * behind those (webhooks, schedules, child runs). Null when there's no such person.
    */
   actingUserId?: string | null
+  /** Whether `actingUserId` is the release's publisher rather than someone running it (for error messages). */
+  actingAsPublisher?: boolean
   /**
    * Whoever started the run (M21): manual, editor and app runs, inherited by child runs; null for schedules
    * and webhooks. Library queries see them as `current_user`.

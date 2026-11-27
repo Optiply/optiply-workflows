@@ -1,10 +1,14 @@
+import type { Keyring } from '@ow/crypto'
 import {
   configVars,
   configVarValues,
   type Db,
   type Environment,
   environments,
+  oauthTokens,
+  type Resource,
   resourceConfigs,
+  resources as resourcesTable,
   type Workflow,
   type WorkflowRelease,
   workflowReleases,
@@ -15,6 +19,7 @@ import {
   canonicalize,
   canonicalJson,
   definitionHash,
+  libraryCalls,
   nextScheduleFire,
   type PythonLock,
   parseWebhookAlias,
@@ -30,7 +35,8 @@ import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
 import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
-import { authorizationCode, usesOwnCredentials } from './oauth-tokens'
+import { resolveLibraryRelease } from './library-queries'
+import { authFingerprint, authorizationCode, renewable, usesOwnCredentials } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { releaseLock } from './python-envs'
 import { nextReleaseVersion } from './release-versions'
@@ -49,6 +55,7 @@ export async function publishRelease(
   access: Access,
   user: { id: string },
   opts: {
+    keyring: Keyring
     workflow: Workflow
     draftRevision: number
     version?: string
@@ -66,7 +73,10 @@ export async function publishRelease(
     })
   }
   const hash = await definitionHash(definition)
-  const plan = await checkReleasable(db, access, workflow, definition, { actorUserId: user.id })
+  const plan = await checkReleasable(db, access, workflow, definition, {
+    actorUserId: user.id,
+    keyring: opts.keyring,
+  })
 
   return db.transaction(async (tx) => {
     // Serializes publishing and setting the live release of one workflow.
@@ -87,6 +97,16 @@ export async function publishRelease(
       js: plan.js,
     })
     if ('unchanged' in release) {
+      // Publishing again what's live re-vouches for it when it would run as someone else (its publisher left, or a
+      // resource started asking for each person's account): the same as making it live again.
+      const [live] = await tx
+        .select()
+        .from(workflowReleases)
+        .where(eq(workflowReleases.id, locked.liveReleaseId!))
+      if (live && live.runsAs !== plan.runsAs) {
+        await makeLive(tx, workflow.id, live, plan, opts.now ?? new Date())
+        return live
+      }
       throw new TRPCError({
         code: 'CONFLICT',
         message: `Nothing changed since the live release, v${release.unchanged}`,
@@ -117,7 +137,21 @@ export async function deployWorkflowFromGit(
 ): Promise<WorkflowRelease | null> {
   const definition = canonicalize(opts.definition)
   const hash = await definitionHash(definition)
-  const plan = await checkReleasable(db, null, opts.workflow, definition, { actorUserId: null })
+  // Nothing to make live when the definition is the live one (a new name or description, say): its checks are for
+  // a new release, and one that runs as its publisher (published before it was protected) must keep doing so.
+  const liveHash = async (q: Db | Tx, liveReleaseId: string | null) =>
+    liveReleaseId
+      ? (
+          await q
+            .select({ hash: workflowReleases.definitionHash })
+            .from(workflowReleases)
+            .where(eq(workflowReleases.id, liveReleaseId))
+        )[0]?.hash
+      : undefined
+  const plan =
+    (await liveHash(db, opts.workflow.liveReleaseId)) === hash
+      ? null
+      : await checkReleasable(db, null, opts.workflow, definition, { actorUserId: null })
   return db.transaction(async (tx) => {
     const [locked] = await tx.select().from(workflows).where(eq(workflows.id, opts.workflow.id)).for('update')
     if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The workflow was deleted meanwhile' })
@@ -133,6 +167,10 @@ export async function deployWorkflowFromGit(
           : {}),
       })
       .where(eq(workflows.id, locked.id))
+    if (!plan) {
+      if ((await liveHash(tx, locked.liveReleaseId)) === hash) return null
+      throw new TRPCError({ code: 'CONFLICT', message: 'The live release changed meanwhile; deploy again' })
+    }
     const release = await insertRelease(tx, locked, definition, hash, {
       notes: opts.notes,
       createdBy: null,
@@ -201,7 +239,7 @@ async function insertRelease(
 export async function setLiveRelease(
   db: Db,
   access: Access,
-  opts: { workflow: Workflow; releaseId: string; now?: Date; actorUserId?: string | null },
+  opts: { workflow: Workflow; releaseId: string; now?: Date; actorUserId?: string | null; keyring: Keyring },
 ): Promise<WorkflowRelease> {
   const [release] = await db
     .select()
@@ -210,6 +248,7 @@ export async function setLiveRelease(
   if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
   const plan = await checkReleasable(db, access, opts.workflow, release.definition, {
     actorUserId: opts.actorUserId ?? null,
+    keyring: opts.keyring,
     lock: release.pythonLock,
     js: { jsLock: release.jsLock, jsBundleHash: release.jsBundleHash },
   })
@@ -247,13 +286,16 @@ interface ReleasePlan {
   pythonLock: PythonLock | null
   /** The JavaScript packages' lock and bundle, built: null without packages. */
   js: ReleaseJsBundle | null
+  /** Whose own accounts its live runs use (`workflow_releases.runs_as`): the actor, when it needs one. */
+  runsAs: string | null
 }
 
 /**
  * The checks for making a definition live. Its runs start from webhooks and schedules with no user behind them, so
  * whoever makes it live vouches for it: they need Edit on the workflow, Use on every resource it queries in every
  * environment (a webhook can pick any environment), Use on every workflow it calls (each must be published) and on
- * every library query it uses (M21; the release it names must exist).
+ * every library query it uses (M21; the release it names must exist). Its resources that use each person's own
+ * account use theirs in live runs (`runsAs`), so they must have connected it in every environment they can use.
  * The definition must be valid, with each query checked by its connector, its schedules' environments must exist,
  * and its webhook alias must be free. `access` null is Git sync (M11): no grants are checked, the rest is.
  */
@@ -264,6 +306,8 @@ async function checkReleasable(
   definition: WorkflowDefinition,
   python: {
     actorUserId: string | null
+    /** To tell whether the actor's own connections can be renewed (a refresh token); not needed without an actor. */
+    keyring?: Keyring
     lock?: PythonLock | null
     /** The release's JavaScript bundle and lock, for a rollback. */
     js?: { jsLock: string | null; jsBundleHash: string | null }
@@ -298,10 +342,33 @@ async function checkReleasable(
     }
   }
 
-  // Nobody is behind a live run, so there's no one whose own account a per-user resource could use.
-  if (resources.length) {
+  // Nobody is behind a live run: resources that use each person's own account use the account of whoever makes the
+  // release live (`runs_as`). So they must have connected it in every environment they can use, and a release from
+  // Git (nobody makes it live) can't use such a resource.
+  let runsAs: string | null = null
+  // Library queries (M21) at a pinned version are part of what's vouched for: that release can't change. One at
+  // `latest` follows whatever is published to the library later, so it never uses the publisher's account (the engine
+  // runs it as nobody); one whose live release needs a person's account is refused here rather than failing live.
+  const pinned: Resource[] = []
+  const latest: { library: string; resource: Resource }[] = []
+  for (const call of libraryCalls(definition)) {
+    const found = await resolveLibraryRelease(db, call.library, call.version).catch(() => null)
+    if (!found) continue // `checkDefinition` reported it.
+    const [resource] = await db
+      .select()
+      .from(resourcesTable)
+      .where(eq(resourcesTable.slug, found.release.definition.resource))
+    if (!resource) continue
+    if (call.version === 'latest') latest.push({ library: call.library, resource })
+    else pinned.push(resource)
+  }
+  const candidates = [
+    ...new Map([...resources, ...pinned, ...latest.map((l) => l.resource)].map((r) => [r.id, r])).values(),
+  ]
+  if (candidates.length) {
     const configs = await db
       .select({
+        id: resourceConfigs.id,
         resourceId: resourceConfigs.resourceId,
         environmentId: resourceConfigs.environmentId,
         config: resourceConfigs.config,
@@ -311,24 +378,76 @@ async function checkReleasable(
       .where(
         inArray(
           resourceConfigs.resourceId,
-          resources.map((r) => r.id),
+          candidates.map((r) => r.id),
         ),
       )
+    const ownCredentials = (c: (typeof configs)[number]) =>
+      usesOwnCredentials(candidates.find((r) => r.id === c.resourceId)!.type, effectiveConfig(c))
+    for (const { library, resource } of latest) {
+      if (configs.some((c) => c.resourceId === resource.id && ownCredentials(c))) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Library query "${library}" is used at its latest version, and its resource "${resource.slug}" uses each person's own account. Pick a version of it: a live run uses the publisher's account only for what they published.`,
+        })
+      }
+    }
     // A per-user OAuth account, or a custom auth flow whose form step asks each person to sign in.
-    const perUser = configs.find((c) =>
-      usesOwnCredentials(resources.find((r) => r.id === c.resourceId)!.type, effectiveConfig(c)),
-    )
-    if (perUser) {
-      const resource = resources.find((r) => r.id === perUser.resourceId)!
-      const env = envs.find((e) => e.id === perUser.environmentId)
-      const where = env ? ` in ${env.slug}` : ''
+    const vouched = new Set([...resources, ...pinned].map((r) => r.id))
+    const own = configs.filter((c) => vouched.has(c.resourceId) && ownCredentials(c))
+    if (own.length && !python.actorUserId) {
+      const resource = candidates.find((r) => r.id === own[0]!.resourceId)!
       throw new TRPCError({
         code: 'BAD_REQUEST',
-        message: authorizationCode(resource.type, effectiveConfig(perUser))
-          ? `Resource "${resource.slug}" uses each person's own account${where}, which a live run (webhook, schedule) has no one to use. Give it a shared account to release this workflow.`
-          : `Resource "${resource.slug}" asks each person to sign in${where} (its sign-in has a form step), which a live run (webhook, schedule) has no one to do. Give it a sign-in without a form to release this workflow.`,
+        message: `Resource "${resource.slug}" uses each person's own account, and a release deployed from Git has nobody whose account its live runs could use. Unprotect the workflow and publish it on the instance (its live runs then use your account), or give the resource a shared account.`,
       })
     }
+    const actor = python.actorUserId
+    const needed = own.filter((c) => !access || access.canUseEnvironment(c.environmentId))
+    if (actor && needed.length) {
+      const connected = await db
+        .select()
+        .from(oauthTokens)
+        .where(
+          and(
+            eq(oauthTokens.userId, actor),
+            inArray(
+              oauthTokens.resourceConfigId,
+              needed.map((c) => c.id),
+            ),
+          ),
+        )
+      for (const c of needed) {
+        const resource = candidates.find((r) => r.id === c.resourceId)!
+        const token = connected.find((t) => t.resourceConfigId === c.id)
+        const ok =
+          token?.status === 'active' &&
+          token.consentHash === authFingerprint(resource.type, effectiveConfig(c))
+        if (!ok) {
+          const env = envs.find((e) => e.id === c.environmentId)
+          const where = env ? ` in ${env.name}` : ''
+          const what = authorizationCode(resource.type, effectiveConfig(c))
+            ? 'Connect your account'
+            : 'Sign in'
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Resource "${resource.slug}" uses each person's own account, and this workflow's live runs (webhooks, schedules) will use yours. ${what} to it${where} first${token ? ' (yours needs connecting again)' : ''}.`,
+          })
+        }
+        // Live runs have nobody to sign in again: a connection that runs out must be renewable.
+        if (python.keyring && !renewable(python.keyring, resource.type, effectiveConfig(c), token!)) {
+          const env = envs.find((e) => e.id === c.environmentId)
+          const where = env ? ` in ${env.name}` : ''
+          const oauth = !!authorizationCode(resource.type, effectiveConfig(c))
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: oauth
+              ? `Your account on resource "${resource.slug}"${where} runs out and can't be renewed (the provider gave no refresh token), so this workflow's live runs would stop working. Ask for offline access in the resource's sign-in settings, or give it a shared account.`
+              : `Your sign-in to resource "${resource.slug}"${where} runs out and has no refresh steps, so this workflow's live runs would stop working. Add refresh steps to its sign-in, or give it a sign-in without a form.`,
+          })
+        }
+      }
+    }
+    if (own.length) runsAs = actor
   }
 
   // Its child runs start unattended too. Workflow access applies in every environment.
@@ -413,7 +532,7 @@ async function checkReleasable(
     if (!(err instanceof BlockFailure)) throw err
     throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
   }
-  return { scheduleEnvironments, aliasShape, pythonLock, js }
+  return { scheduleEnvironments, aliasShape, pythonLock, js, runsAs }
 }
 
 /**
@@ -477,6 +596,10 @@ async function checkWebhookSettings(
 
 /** Points the workflow at the release and projects its triggers. Runs in the caller's transaction. */
 async function makeLive(tx: Tx, workflowId: string, release: WorkflowRelease, plan: ReleasePlan, now: Date) {
+  // Whoever makes it live vouches with their own accounts, also when rolling back to someone else's release. Always
+  // written (under the workflow's row lock): `release` was read before it, so another rollback may have changed it.
+  await tx.update(workflowReleases).set({ runsAs: plan.runsAs }).where(eq(workflowReleases.id, release.id))
+  release.runsAs = plan.runsAs
   await tx.update(workflows).set({ liveReleaseId: release.id }).where(eq(workflows.id, workflowId))
   // The alias was checked before the transaction; the unique index catches another workflow taking it meanwhile.
   await uniqueOr('Another workflow just took this webhook alias', () =>

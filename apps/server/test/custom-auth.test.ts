@@ -8,7 +8,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { restConnector } from '@ow/connectors'
 import { startTestGraphql } from '@ow/connectors/testing'
-import { environments, oauthTokens, resourceConfigs } from '@ow/db'
+import { environments, oauthTokens, resourceConfigs, workflowReleases } from '@ow/db'
 import { IvmRuntime } from '@ow/sandbox'
 import { eq, sql } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -1008,8 +1008,8 @@ describe('a form step: each person signs in with their own details', () => {
     }
   })
 
-  it('refuses to release a workflow on a resource that asks each person to sign in', async () => {
-    await formResource('form_release')
+  it('releases a workflow on a resource that asks each person to sign in once its publisher has', async () => {
+    const { id } = await formResource('form_release')
     const created = data(
       await admin.mutate('workflows.create', { slug: 'form-release', name: 'form-release' }),
     )
@@ -1037,8 +1037,44 @@ describe('a form step: each person signs in with their own details', () => {
     })
     expect(refused.status).toBe(400)
     expect(refused.body.error?.message).toBe(
-      'Resource "form_release" asks each person to sign in in production (its sign-in has a form step), which a live run (webhook, schedule) has no one to do. Give it a sign-in without a form to release this workflow.',
+      `Resource "form_release" uses each person's own account, and this workflow's live runs (webhooks, schedules) will use yours. Sign in to it in Production first.`,
     )
+    await signInAs(admin, id)
+    const release = data(
+      await admin.mutate('releases.publish', { workflowId: created.id, draftRevision: saved.revision }),
+    )
+    const [row] = await env.db.select().from(workflowReleases).where(eq(workflowReleases.id, release.id))
+    expect(row!.runsAs).not.toBeNull()
+  })
+
+  it('refuses to release on a form sign-in that runs out with no refresh steps', async () => {
+    const { id } = await formResource('form_ttl', { ttlSeconds: 600, refreshSteps: [] })
+    await signInAs(admin, id)
+    const created = data(await admin.mutate('workflows.create', { slug: 'form-ttl', name: 'form-ttl' }))
+    const saved = data(
+      await admin.mutate('workflows.saveDraft', {
+        id: created.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          blocks: [
+            { name: 'startTrigger', type: 'startTrigger' },
+            {
+              name: 'feed',
+              type: 'resourceQuery',
+              config: { resource: 'form_ttl', query: { path: 'data' } },
+            },
+          ],
+          edges: [{ from: 'startTrigger', port: 'out', to: 'feed' }],
+        },
+      }),
+    )
+    const refused = await admin.mutate('releases.publish', {
+      workflowId: created.id,
+      draftRevision: saved.revision,
+    })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toMatch(/runs out and has no refresh steps/)
   })
 
   it('lets only admins set up or change the sign-in of a flow with a form step', async () => {

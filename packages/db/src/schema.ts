@@ -541,6 +541,12 @@ export const workflowReleases = pgTable(
     jsLock: text(),
     jsBundleHash: text(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    /**
+     * Whose own accounts its live runs use, for resources that connect one per person (per-user OAuth, a custom
+     * auth flow with a form step): whoever last made it live, set then and only when it uses such a resource.
+     * Null otherwise (and for releases from Git): such a resource then fails, as nobody is behind the run.
+     */
+    runsAs: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
   (t) => [
