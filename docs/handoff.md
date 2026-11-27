@@ -2025,7 +2025,16 @@ Auth0 admin and the data team): `architecture.md` §2.47.
   run's account error names the publisher (`onPublishersBehalf`). Screenshots before/after shown to the user.
 - **Step 1c:** docs (user and admin guides with a "who a published workflow runs as" note, connectors runbook,
   README, `architecture.md` §2.47), PDFs rebuilt (they also pick up session 62's text), this section.
-- **Next:** both review agents on the branch, the user decides on findings, then the PR. After the merge and
+- **Review:** security-auditor (1 High, 1 Low) and bug-hunter (2 Medium, 4 Low, 1 needs check); the user chose to
+  fix all, one commit each: `7e8c358` (library queries: pinned versions vouched, `latest` never runs as the
+  publisher and is refused on a per-person resource — the High, and the Medium of library-only workflows),
+  `08306b2` (webhook replies don't name the publisher), `5c9bb5a` (an unchanged publish or Make live again
+  re-vouches; Publish ▾ → Make live again, Run as me), `2487d7c` (the Connect button only for the publisher),
+  `949e942` (a connection that runs out and can't be renewed is refused), `552d841` (Git deploy: unchanged
+  definition skips the checks; "Unprotect …" message), `763b60b` (runs_as always written under the lock),
+  `fc657c7` (admins-only environment: "an admin makes it live again"). Full suites: server 762, engine 167,
+  definition 198, web 167, connectors 427, db 20; e2e releases + m9 on a fresh build.
+- **Next:** the PR. After the merge and
   deploy: the user republishes nothing (no release had `runs_as` before); new SDK / data-platform workflows publish
   once the publisher has connected. Specialist folder: re-copy `10-`/`11-` guides and `20-runbook-connectors.md`.
 - **Not done:** a test of the Git-deploy refusal message.
@@ -2963,8 +2972,8 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 ## 15. How to start the next session
 
 **Session 63 (2026-11-27):** branch `feat/run-as-publisher` (§14 "Session 63"): live runs of workflows on
-per-person resources (the SDK, the data platform) run as whoever published them. Steps 1a–1c committed; open: the
-review agents, the PR, then the deploy (migration 0053). The unattended-runs options doc is superseded by this choice
+per-person resources (the SDK, the data platform) run as whoever published them. Steps 1a–1c and the 8 review fixes
+committed; open: the PR, then the deploy (migration 0053). The unattended-runs options doc is superseded by this choice
 for now (shared service resources stay possible later).
 
 **Session 62 (2026-11-26):** BigQuery with each person's Optiply account (PR #22, `4a3963a`) and its Tables panel
