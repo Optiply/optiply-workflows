@@ -400,6 +400,32 @@ describe('workflows', () => {
     await env.db.update(users).set({ disabledAt: null }).where(eq(users.id, other.id))
   })
 
+  it("refuses to publish on a connection that runs out and can't be renewed", async () => {
+    const id = await oauthResource('norefresh', 'perUser')
+    const [row] = await env.db.select().from(resourceConfigs).where(eq(resourceConfigs.resourceId, id))
+    validAccess.set('norefresh-admin-1', 'norefresh:admin')
+    await saveTokens(env.db, env.config.keyring, {
+      resourceConfigId: row!.id,
+      environmentId: prodId,
+      userId: adminId,
+      tokens: {
+        accessToken: 'norefresh-admin-1',
+        refreshToken: null,
+        expiresAt: new Date(Date.now() + 3_600_000),
+        scope: 'me',
+        account: null,
+      },
+      consentHash: authFingerprint('rest', row!.config)!,
+      connectedBy: adminId,
+    })
+    const wf = await meWorkflow('norefresh-live', 'norefresh')
+    const refused = await admin.mutate('releases.publish', { workflowId: wf.id, draftRevision: wf.revision })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toMatch(
+      /runs out and can't be renewed \(the provider gave no refresh token\)/,
+    )
+  })
+
   it("library queries use the publisher's account only at a pinned version", async () => {
     // Admin connected mailpub in the test before.
     const lib = data(await admin.mutate('libraryQueries.create', { slug: 'mail_me', name: 'Mail me' }))

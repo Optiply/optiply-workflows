@@ -1047,6 +1047,36 @@ describe('a form step: each person signs in with their own details', () => {
     expect(row!.runsAs).not.toBeNull()
   })
 
+  it('refuses to release on a form sign-in that runs out with no refresh steps', async () => {
+    const { id } = await formResource('form_ttl', { ttlSeconds: 600, refreshSteps: [] })
+    await signInAs(admin, id)
+    const created = data(await admin.mutate('workflows.create', { slug: 'form-ttl', name: 'form-ttl' }))
+    const saved = data(
+      await admin.mutate('workflows.saveDraft', {
+        id: created.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          blocks: [
+            { name: 'startTrigger', type: 'startTrigger' },
+            {
+              name: 'feed',
+              type: 'resourceQuery',
+              config: { resource: 'form_ttl', query: { path: 'data' } },
+            },
+          ],
+          edges: [{ from: 'startTrigger', port: 'out', to: 'feed' }],
+        },
+      }),
+    )
+    const refused = await admin.mutate('releases.publish', {
+      workflowId: created.id,
+      draftRevision: saved.revision,
+    })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toMatch(/runs out and has no refresh steps/)
+  })
+
   it('lets only admins set up or change the sign-in of a flow with a form step', async () => {
     const { id } = await formResource('form_admin_only')
     await createLocalUser(env.db, 'form-editor@optiply.nl')

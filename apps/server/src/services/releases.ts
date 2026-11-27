@@ -1,3 +1,4 @@
+import type { Keyring } from '@ow/crypto'
 import {
   configVars,
   configVarValues,
@@ -35,7 +36,7 @@ import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
 import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
 import { resolveLibraryRelease } from './library-queries'
-import { authFingerprint, authorizationCode, usesOwnCredentials } from './oauth-tokens'
+import { authFingerprint, authorizationCode, renewable, usesOwnCredentials } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { releaseLock } from './python-envs'
 import { nextReleaseVersion } from './release-versions'
@@ -54,6 +55,7 @@ export async function publishRelease(
   access: Access,
   user: { id: string },
   opts: {
+    keyring: Keyring
     workflow: Workflow
     draftRevision: number
     version?: string
@@ -71,7 +73,10 @@ export async function publishRelease(
     })
   }
   const hash = await definitionHash(definition)
-  const plan = await checkReleasable(db, access, workflow, definition, { actorUserId: user.id })
+  const plan = await checkReleasable(db, access, workflow, definition, {
+    actorUserId: user.id,
+    keyring: opts.keyring,
+  })
 
   return db.transaction(async (tx) => {
     // Serializes publishing and setting the live release of one workflow.
@@ -216,7 +221,7 @@ async function insertRelease(
 export async function setLiveRelease(
   db: Db,
   access: Access,
-  opts: { workflow: Workflow; releaseId: string; now?: Date; actorUserId?: string | null },
+  opts: { workflow: Workflow; releaseId: string; now?: Date; actorUserId?: string | null; keyring: Keyring },
 ): Promise<WorkflowRelease> {
   const [release] = await db
     .select()
@@ -225,6 +230,7 @@ export async function setLiveRelease(
   if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
   const plan = await checkReleasable(db, access, opts.workflow, release.definition, {
     actorUserId: opts.actorUserId ?? null,
+    keyring: opts.keyring,
     lock: release.pythonLock,
     js: { jsLock: release.jsLock, jsBundleHash: release.jsBundleHash },
   })
@@ -282,6 +288,8 @@ async function checkReleasable(
   definition: WorkflowDefinition,
   python: {
     actorUserId: string | null
+    /** To tell whether the actor's own connections can be renewed (a refresh token); not needed without an actor. */
+    keyring?: Keyring
     lock?: PythonLock | null
     /** The release's JavaScript bundle and lock, for a rollback. */
     js?: { jsLock: string | null; jsBundleHash: string | null }
@@ -379,11 +387,7 @@ async function checkReleasable(
     const needed = own.filter((c) => !access || access.canUseEnvironment(c.environmentId))
     if (actor && needed.length) {
       const connected = await db
-        .select({
-          resourceConfigId: oauthTokens.resourceConfigId,
-          consentHash: oauthTokens.consentHash,
-          status: oauthTokens.status,
-        })
+        .select()
         .from(oauthTokens)
         .where(
           and(
@@ -409,6 +413,18 @@ async function checkReleasable(
           throw new TRPCError({
             code: 'BAD_REQUEST',
             message: `Resource "${resource.slug}" uses each person's own account, and this workflow's live runs (webhooks, schedules) will use yours. ${what} to it${where} first${token ? ' (yours needs connecting again)' : ''}.`,
+          })
+        }
+        // Live runs have nobody to sign in again: a connection that runs out must be renewable.
+        if (python.keyring && !renewable(python.keyring, resource.type, effectiveConfig(c), token!)) {
+          const env = envs.find((e) => e.id === c.environmentId)
+          const where = env ? ` in ${env.name}` : ''
+          const oauth = !!authorizationCode(resource.type, effectiveConfig(c))
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: oauth
+              ? `Your account on resource "${resource.slug}"${where} runs out and can't be renewed (the provider gave no refresh token), so this workflow's live runs would stop working. Ask for offline access in the resource's sign-in settings, or give it a shared account.`
+              : `Your sign-in to resource "${resource.slug}"${where} runs out and has no refresh steps, so this workflow's live runs would stop working. Add refresh steps to its sign-in, or give it a sign-in without a form.`,
           })
         }
       }

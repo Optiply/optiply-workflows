@@ -58,6 +58,17 @@ export function usesOwnCredentials(type: string, config: unknown): boolean {
 }
 
 /**
+ * Whether a person's own connection keeps working with nobody there to sign in again (a live run acting as its
+ * publisher): it doesn't run out, or it can be renewed (an OAuth refresh token, a custom flow's refresh steps).
+ */
+export function renewable(keyring: Keyring, type: string, config: unknown, row: OAuthToken): boolean {
+  if (!row.expiresAt) return true
+  const http = httpConfigFor(type, config)
+  if (http?.auth.type === 'custom') return http.auth.refreshSteps.length > 0
+  return !!decryptTokens(keyring, row).refreshToken
+}
+
+/**
  * The authorization-code settings of an HTTP resource config (REST's, or what another type connects with; defaults
  * applied), or null for any other config.
  */

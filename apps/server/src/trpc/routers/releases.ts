@@ -77,6 +77,7 @@ export const releasesRouter = router({
       const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
       requireUnprotected(workflow, 'workflow', 'publish it')
       const release = await publishRelease(ctx.db, access, ctx.user, {
+        keyring: ctx.config.keyring,
         workflow,
         draftRevision: input.draftRevision,
         version: input.version,
@@ -102,6 +103,7 @@ export const releasesRouter = router({
         workflow,
         releaseId: input.releaseId,
         actorUserId: ctx.user.id,
+        keyring: ctx.config.keyring,
       })
       await ctx.audit({
         action: 'workflow.release_live',

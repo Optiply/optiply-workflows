@@ -1532,6 +1532,11 @@ The workflow uses a resource that signs in with each person's own account, such 
 will use your account, so connect it to that resource (in every environment you can use) and publish again. The
 release then shows **Runs as** your name. Whoever publishes or rolls back later becomes the one it runs as.
 
+**Publishing says your account (or sign-in) runs out and can't be renewed.**
+Live runs have nobody to sign in again, so the connection must renew itself: an OAuth account needs a refresh token
+(the resource's sign-in must ask for offline access), a custom sign-in needs refresh steps. Ask an admin to change the
+resource's sign-in settings, then connect again.
+
 **A live run says it uses someone's own account and they need to connect it.**
 The person the release runs as has disconnected, needs to reconnect, or no longer has access. They connect again, or
 someone else makes it live again as themselves: **Publish ▾ → Make live again**, or **Run as me** on the live
