@@ -5,8 +5,10 @@
  */
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { ConnectorError } from '@ow/connectors'
 import {
   createDb,
+  environments,
   groups,
   oauthTokens,
   permissions,
@@ -21,6 +23,7 @@ import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { authFingerprint, saveTokens } from '../src/services/oauth-tokens'
 import { deployWorkflowFromGit } from '../src/services/releases'
+import { onPublishersBehalf } from '../src/services/workflow-runs'
 import { startWorker } from '../src/worker'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
@@ -400,6 +403,31 @@ describe('workflows', () => {
       error: { message: expect.stringMatching(/nobody is behind this run/) },
     })
     await env.db.update(users).set({ disabledAt: null }).where(eq(users.id, other.id))
+  })
+
+  it("in an admins-only environment, a non-admin publisher's error says an admin makes it live", async () => {
+    const [staging] = await env.db
+      .insert(environments)
+      .values({ slug: 'staging-ao', name: 'Staging AO', adminOnly: true })
+      .returning()
+    const failing = {
+      accessToken: async (): Promise<string> => {
+        throw new ConnectorError('auth_required', 'Connect your account to this resource to use it.', {
+          reason: 'not_connected',
+          account: 'user',
+          resourceId: 'r',
+          environmentId: staging!.id,
+        })
+      },
+    }
+    const signal = new AbortController().signal
+    await expect(onPublishersBehalf(env.db, failing, memberId).accessToken!({ signal })).rejects.toThrow(
+      /this environment is for admins only, so an admin makes it live again/,
+    )
+    await expect(onPublishersBehalf(env.db, failing, adminId).accessToken!({ signal })).rejects.toThrow(
+      /they need to connect their own account to this resource in this environment/,
+    )
+    await env.db.delete(environments).where(eq(environments.id, staging!.id))
   })
 
   it('a Git deploy keeps a release that runs as its publisher, and refuses a new one', async () => {

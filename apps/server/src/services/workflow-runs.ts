@@ -47,6 +47,7 @@ import { type Access, atLeast } from './permissions'
 import { pythonDiagnostics } from './python'
 import { toResolved } from './resources'
 import { decryptForRow } from './secrets'
+import { isAdmin } from './users'
 
 /** A refused request, with the HTTP status to answer with. */
 export class RunRequestError extends Error {
@@ -466,7 +467,11 @@ export function dbResourceProvider(db: Db, keyring: Keyring, sandbox: CodeRuntim
  * A live run's credentials, used on behalf of whoever made its release live: when their own account can't be used,
  * the error names them (its own messages say "your", which reads as whoever looks at the run).
  */
-function onPublishersBehalf(db: Db, credentials: CredentialSource, publisherId: string): CredentialSource {
+export function onPublishersBehalf(
+  db: Db,
+  credentials: CredentialSource,
+  publisherId: string,
+): CredentialSource {
   const rethrow = async (err: unknown): Promise<never> => {
     if (!(err instanceof ConnectorError) || err.code !== 'auth_required' || err.details?.account !== 'user') {
       throw err
@@ -475,9 +480,21 @@ function onPublishersBehalf(db: Db, credentials: CredentialSource, publisherId: 
     const who = user?.name ?? 'The person who made this release live'
     const act = err.details.flow === 'form' ? 'sign in to' : 'connect their own account to'
     const again = err.details.reason === 'not_connected' ? '' : ' again'
+    // An admins-only environment (Staging) the publisher may not use: only an admin can vouch for runs there.
+    const environmentId = typeof err.details.environmentId === 'string' ? err.details.environmentId : null
+    const [environment] = environmentId
+      ? await db
+          .select({ adminOnly: environments.adminOnly })
+          .from(environments)
+          .where(eq(environments.id, environmentId))
+      : []
+    const fix =
+      environment?.adminOnly && !(await isAdmin(db, publisherId))
+        ? `this environment is for admins only, so an admin makes it live again with theirs (Publish ▾ → Make live again)`
+        : `they need to ${act} this resource${again} in this environment, or someone else makes it live again with theirs (Publish ▾ → Make live again)`
     throw new ConnectorError(
       'auth_required',
-      `This workflow's live runs use the own account of ${who}, who made this release live: they need to ${act} this resource${again} in this environment, or someone else makes it live again with theirs (Publish ▾ → Make live again). (${err.message})`,
+      `This workflow's live runs use the own account of ${who}, who made this release live: ${fix}. (${err.message})`,
       { ...err.details, publisher: true, publisherId },
     )
   }
