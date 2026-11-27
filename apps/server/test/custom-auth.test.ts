@@ -8,7 +8,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { restConnector } from '@ow/connectors'
 import { startTestGraphql } from '@ow/connectors/testing'
-import { environments, oauthTokens, resourceConfigs } from '@ow/db'
+import { environments, oauthTokens, resourceConfigs, workflowReleases } from '@ow/db'
 import { IvmRuntime } from '@ow/sandbox'
 import { eq, sql } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -1008,8 +1008,8 @@ describe('a form step: each person signs in with their own details', () => {
     }
   })
 
-  it('refuses to release a workflow on a resource that asks each person to sign in', async () => {
-    await formResource('form_release')
+  it('releases a workflow on a resource that asks each person to sign in once its publisher has', async () => {
+    const { id } = await formResource('form_release')
     const created = data(
       await admin.mutate('workflows.create', { slug: 'form-release', name: 'form-release' }),
     )
@@ -1037,8 +1037,14 @@ describe('a form step: each person signs in with their own details', () => {
     })
     expect(refused.status).toBe(400)
     expect(refused.body.error?.message).toBe(
-      'Resource "form_release" asks each person to sign in in production (its sign-in has a form step), which a live run (webhook, schedule) has no one to do. Give it a sign-in without a form to release this workflow.',
+      `Resource "form_release" uses each person's own account, and this workflow's live runs (webhooks, schedules) will use yours. Sign in to it in Production first.`,
     )
+    await signInAs(admin, id)
+    const release = data(
+      await admin.mutate('releases.publish', { workflowId: created.id, draftRevision: saved.revision }),
+    )
+    const [row] = await env.db.select().from(workflowReleases).where(eq(workflowReleases.id, release.id))
+    expect(row!.runsAs).not.toBeNull()
   })
 
   it('lets only admins set up or change the sign-in of a flow with a form step', async () => {

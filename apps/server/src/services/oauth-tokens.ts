@@ -407,8 +407,8 @@ export function oauthCredentials(
 
 /**
  * The credentials a query against this resource config uses, or undefined when it doesn't connect accounts. A
- * shared account is everyone's; on per-user resources, `actingUserId`'s own account is used, and a query nobody
- * runs (a live workflow run) fails asking for a resource with a shared account.
+ * shared account is everyone's; on per-user resources, `actingUserId`'s own account is used (a live workflow run's
+ * is whoever published it), and a query nobody is behind fails.
  */
 export function credentialsFor(
   deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
@@ -439,7 +439,7 @@ export function credentialsFor(
       async accessToken() {
         throw new ConnectorError(
           'auth_required',
-          "This resource uses each person's own account, and nobody is behind this run. Use a resource with a shared account in workflows that run on their own.",
+          "This resource uses each person's own account, and nobody is behind this run: a live run uses the account of whoever published the workflow, and this release has none (published before that, from Git, or that person can no longer sign in). Publish it again, or use a resource with a shared account.",
           {
             reason: 'no_user',
             account: 'user',

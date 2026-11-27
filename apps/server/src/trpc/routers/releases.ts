@@ -1,6 +1,7 @@
 import { users, workflowReleases } from '@ow/db'
 import { TRPCError } from '@trpc/server'
 import { and, desc, eq } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { z } from 'zod'
 import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import { publishRelease, setLiveRelease } from '../../services/releases'
@@ -8,6 +9,7 @@ import { authedProcedure, router } from '../init'
 import { visibleWorkflow } from './workflows'
 
 const Id = z.string().uuid()
+const runsAsUsers = alias(users, 'runs_as_users')
 
 /**
  * A workflow's releases: immutable, semver-numbered copies of the draft. The live one is what webhooks, schedules
@@ -19,12 +21,17 @@ export const releasesRouter = router({
   list: authedProcedure.input(z.object({ workflowId: Id })).query(async ({ ctx, input }) => {
     const { workflow } = await visibleWorkflow(ctx, input.workflowId)
     const rows = await ctx.db
-      .select({ release: workflowReleases, author: { id: users.id, name: users.name, email: users.email } })
+      .select({
+        release: workflowReleases,
+        author: { id: users.id, name: users.name, email: users.email },
+        runsAs: { id: runsAsUsers.id, name: runsAsUsers.name, email: runsAsUsers.email },
+      })
       .from(workflowReleases)
       .leftJoin(users, eq(users.id, workflowReleases.createdBy))
+      .leftJoin(runsAsUsers, eq(runsAsUsers.id, workflowReleases.runsAs))
       .where(eq(workflowReleases.workflowId, workflow.id))
       .orderBy(desc(workflowReleases.createdAt), desc(workflowReleases.id))
-    return rows.map(({ release, author }) => ({
+    return rows.map(({ release, author, runsAs }) => ({
       id: release.id,
       version: release.version,
       notes: release.notes,
@@ -33,6 +40,8 @@ export const releasesRouter = router({
       createdBy: author,
       /** Set on releases deployed from Git (made by Git sync: `createdBy` is null). */
       gitCommit: release.gitCommit,
+      /** Whose own accounts its live runs use, for resources that connect one per person; null when none do. */
+      runsAs,
       live: release.id === workflow.liveReleaseId,
     }))
   }),

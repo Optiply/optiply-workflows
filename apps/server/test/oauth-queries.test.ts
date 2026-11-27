@@ -5,7 +5,7 @@
  */
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { createDb, groups, permissions, resourceConfigs } from '@ow/db'
+import { createDb, groups, permissions, resourceConfigs, users, workflowReleases, workflows } from '@ow/db'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -180,6 +180,16 @@ async function runWorkflow(slug: string, version: 'draft' | 'live') {
   }
 }
 
+/** Whose account the workflow's live release runs as (`runs_as`). */
+async function runsAs(workflowId: string) {
+  const [row] = await env.db
+    .select({ runsAs: workflowReleases.runsAs })
+    .from(workflows)
+    .innerJoin(workflowReleases, eq(workflowReleases.id, workflows.liveReleaseId))
+    .where(eq(workflows.id, workflowId))
+  return row!.runsAs
+}
+
 /** A draft workflow that calls the API through `resource` and replies with what it answered. */
 async function meWorkflow(slug: string, resource: string) {
   const created = data(await admin.mutate('workflows.create', { slug, name: slug }))
@@ -299,23 +309,63 @@ describe('workflows', () => {
     })
   })
 
-  it('live runs use the shared account; per-user resources are refused at publishing', async () => {
+  it('live runs use the shared account, or the account of whoever made the release live', async () => {
     const wf = await meWorkflow('crm-live', 'crm')
     data(await admin.mutate('releases.publish', { workflowId: wf.id, draftRevision: wf.revision }))
     expect(await runWorkflow('crm-live', 'live')).toMatchObject({
       status: 'succeeded',
       response: { body: { who: 'crm:shared' } },
     })
+    // A shared account only: the release runs as nobody.
+    expect(await runsAs(wf.id)).toBeNull()
 
-    const mailWf = await meWorkflow('mail-live', 'mail')
+    const id = await oauthResource('mailpub', 'perUser')
+    const mailWf = await meWorkflow('mailpub-live', 'mailpub')
+    // Not connected yet: refused, as its live runs would fail.
     const refused = await admin.mutate('releases.publish', {
       workflowId: mailWf.id,
       draftRevision: mailWf.revision,
     })
     expect(refused.status).toBe(400)
     expect(refused.body.error?.message).toBe(
-      `Resource "mail" uses each person's own account in production, which a live run (webhook, schedule) has no one to use. Give it a shared account to release this workflow.`,
+      `Resource "mailpub" uses each person's own account, and this workflow's live runs (webhooks, schedules) will use yours. Connect your account to it in Production first.`,
     )
+
+    await connect(id, adminId, 'mailpub-admin-1')
+    const first = data(
+      await admin.mutate('releases.publish', { workflowId: mailWf.id, draftRevision: mailWf.revision }),
+    )
+    expect(await runsAs(mailWf.id)).toBe(adminId)
+    expect(await runWorkflow('mailpub-live', 'live')).toMatchObject({
+      status: 'succeeded',
+      response: { body: { who: 'mailpub:admin' } },
+    })
+    const listed = data(await admin.query('releases.list', { workflowId: mailWf.id }))
+    expect(listed[0].runsAs).toMatchObject({ id: adminId, email: 'admin@optiply.nl' })
+
+    // Rolling back vouches too: the release then runs as whoever made it live, once they've connected.
+    const other = await createLocalUser(env.db, 'admin2@optiply.nl', { admin: true })
+    const admin2 = trpc(env.app, await login(env.app, 'admin2@optiply.nl'))
+    const notConnected = await admin2.mutate('releases.setLive', {
+      workflowId: mailWf.id,
+      releaseId: first.id,
+    })
+    expect(notConnected.status).toBe(400)
+    await connect(id, other.id, 'mailpub-admin2-1')
+    data(await admin2.mutate('releases.setLive', { workflowId: mailWf.id, releaseId: first.id }))
+    expect(await runsAs(mailWf.id)).toBe(other.id)
+    expect(await runWorkflow('mailpub-live', 'live')).toMatchObject({
+      status: 'succeeded',
+      response: { body: { who: 'mailpub:admin2' } },
+    })
+
+    // Someone who can no longer sign in isn't acted as.
+    await env.db.update(users).set({ disabledAt: new Date() }).where(eq(users.id, other.id))
+    expect(await runWorkflow('mailpub-live', 'live')).toMatchObject({
+      status: 'failed',
+      error: { message: expect.stringMatching(/nobody is behind this run/) },
+    })
+    await env.db.update(users).set({ disabledAt: null }).where(eq(users.id, other.id))
   })
 
   it('a live run on a resource switched to per-user accounts fails asking for a shared one', async () => {
@@ -325,7 +375,7 @@ describe('workflows', () => {
     data(await admin.mutate('releases.publish', { workflowId: wf.id, draftRevision: wf.revision }))
     await saveAuth(id, 'perUser')
     await connect(id, adminId, 'crmswitch-admin-1')
-    // Even started by someone with an account: a release has no person behind it.
+    // Even started by someone with an account: it was published when the resource needed nobody's account.
     const run = await runWorkflow('switch-live', 'live')
     expect(run).toMatchObject({
       status: 'failed',
