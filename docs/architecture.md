@@ -555,7 +555,7 @@ REST resources that act as a person or a workspace, or that have their own login
 - **OAuth 2.0 authorization code.** The settings hold the authorization and token URLs, client ID, scopes, extra consent parameters, client auth, PKCE (S256, on by default) and the token mode (`shared` or `perUser`); the client secret is with the other secrets. Presets (`@ow/connectors/oauth-presets`, browser-safe) fill these in for Google (offline access and a consent prompt, so a refresh token is issued), HubSpot, Slack (`ok: false` answers; user tokens in `authed_user`) and Microsoft 365 (a `{tenant}` placeholder; the scopes are sent again on refresh; refresh tokens rotate).
 - **The connect flow** (`apps/server/src/api/oauth.ts`): `/api/oauth/start` (session; Edit for the shared account, Use for one's own) puts state, the PKCE verifier, the person and a fingerprint of the consent settings in a signed, HttpOnly cookie named after the state (10 minutes, path `/api/oauth`), then redirects to the consent screen. `/api/oauth/callback` (one redirect URI for every resource) needs that cookie, the same state and the same person's session, checks access and the consent settings again, exchanges the code and stores the tokens; it ends on a page that posts `ow:oauth` to the opener (`PUBLIC_URL`'s origin) and closes. Connects, disconnects and refused refreshes are audited without tokens.
 - **Tokens in queries:** connectors ask the server through `QueryContext.credentials` (`accessToken({ force })`), so user tokens never sit in pooled clients; a 401 forces one refresh and a retry. Refreshes run under an advisory lock per owner, taken by trying and sleeping outside any transaction (waiters hold no connection), and whoever waited uses what the other stored: rotating refresh tokens are never spent twice. A refused refresh (`invalid_grant`) marks the row `reconnect` (committed) and later queries fail at once with `auth_required` (details: reason, shared/user, resource, environment), which the UI turns into Connect / Reconnect prompts. Changing the consent settings (including the token mode and where requests go: the base URL's origin and the allowed hosts) disconnects accounts, so a resource can't be pointed elsewhere to receive its token.
-- **Whose account:** the shared one, or on per-user resources the person behind the query: the playground's caller, an app's viewer (who may connect their own account through the app, without access to the resource), a draft run's starter (the engine's `actingUserId`). Runs of a release have nobody behind them, so publishing (and rollback) refuses workflows that query a per-user resource.
+- **Whose account:** the shared one, or on per-user resources the person behind the query: the playground's caller, an app's viewer (who may connect their own account through the app, without access to the resource), a draft run's starter (the engine's `actingUserId`). Runs of a release have nobody behind them: since session 63 they act as the release's `runs_as` (§2.47).
 - **Custom auth flows** (auth type `custom`): ordered steps (a REST request through the resource's base URL and allowed hosts without its default headers, JavaScript in the sandbox, or a variable), with `secrets.NAME` (named secret values), `auth` and earlier steps in scope; optional refresh steps (run on a 401 from the current variables, falling back to signing in) and `ttlSeconds`. The variables (`auth.NAME`) are rendered into the resource's headers and parameters on each attempt, scrubbed from results, stored encrypted in `oauth_tokens` (one shared row), and signed in for under a transaction-scoped advisory lock per config. Test connection signs in afresh in memory.
   - **Form steps** (session 61): a `form` step (`fields` of text or password) asks the person signing in for values, in scope as `<step>.<field>`; never stored, logged or audited, scrubbed from failures. A flow with one keeps **each person's own** variables (`oauth_tokens.user_id`), signed in only through `resources.customAuthSignIn` with what they typed (also through an app whose live release queries the resource, `appId`, as OAuth's per-user connect; apps-only users too; not in admin-only environments). Queries use the person's variables, renew them with the refresh steps (no forms there), else fail `auth_required` `{ account: 'user', flow: 'form' }`, which the UI answers with the sign-in dialog; runs nobody is behind fail (`no_user`). Signing in backs off per person. Caches of what queries return (GraphQL schemas, HubSpot properties) are per person for such flows, and workflows using such a resource can't be released (`usesOwnCredentials`). Only admins set up or change a form flow's sign-in (steps, refresh steps, base URL, allowed hosts: `customFlowHash`), since it sends what people type; the dialog names those hosts. A person's failures count for an hour whatever succeeds between, and are audited (`resource.custom_auth_sign_in_failed`, never values); after typed details, `last_error` keeps only the step and HTTP status.
   - **Sign-in card** (session 61): `resources.customAuthStatus` (state, since/until, variable names, last failure kept on the row as `last_error`, people signed in for Edit), **Sign in now** (shared flows, Edit; skips the back-off) and **Sign out**. A sign-in a query needed that fails marks the row `reconnect`, so the next query signs in again rather than reusing refused variables.
@@ -1612,3 +1612,36 @@ through the data platform's pool `data-platform-users` (project number 429012531
   secret dropped, a look-alike domain refused, the redirect to `login.optiply.com/authorize` with the audience) and
   `connectors.test.ts` (Salesforce's wording); e2e `bigquery.spec.ts` (the form, both client-id messages, the
   domains, placeholders, saving, connecting asked for).
+
+## 2.47 Live runs as the publisher (session 63)
+
+Workflows on resources that connect one account per person (per-user OAuth such as the Optiply SDK, the Optiply
+data platform's sign-in, a custom auth flow with a form step) couldn't be published: a live run had nobody whose
+account to use. The user chose "runs as the publisher" over shared service identities (an Auth0 M2M app, a data-team
+service account), which need other teams' work; those remain possible as separate shared resources.
+
+- **`workflow_releases.runs_as`** (migration 0053, FK `users`, on delete set null): whose own accounts its live runs
+  use. `checkReleasable` sets `plan.runsAs` = the actor when the definition uses such a resource (`usesOwnCredentials`
+  on any of its configs), null otherwise; `makeLive` writes it onto the release, so publishing and rollback
+  (`setLiveRelease`) both make the person doing it vouch with their own account. Releases from Git (no actor) are
+  refused when they use such a resource ("Publish it on the instance").
+- **The check:** the actor needs an `oauth_tokens` row of their own (`status` active, `consent_hash` = the current
+  `authFingerprint`) for every such config in every environment they can use (`access.canUseEnvironment`; a webhook
+  can pick any environment). Otherwise "… will use yours. Connect your account to it in <env> first" ("Sign in" for
+  custom flows).
+- **Runs:** the executor's `loadDefinition` returns `actingUserId` = `runs_as` for a release run while that user has
+  `status` active and no `disabledAt` (else null: the old "nobody is behind this run", now saying to publish again),
+  and `actingAsPublisher`. The engine passes `asPublisher` to the resource provider, whose `onPublishersBehalf` wraps
+  the credentials: an `auth_required` for a person's own account is rethrown naming the publisher (details
+  `publisher: true`), as its own text says "your".
+- **Unchanged:** `currentUserId` (library queries' `current_user`) stays whoever started the run; draft runs act as
+  their starter. A release with `runs_as` null whose resource later becomes per-person still fails at run time.
+- **Trade-off:** anyone who may start the live workflow (its webhook, an app, the API, a parent workflow) reaches what
+  the publisher's account can, as with a shared account. Only people with Edit on the workflow can publish or roll back,
+  and only with their own account.
+- **UI:** the publish dialog says those resources use yours; a release with `runs_as` shows **Runs as <name>**
+  (`releases.list` returns `runsAs`); rollback confirmations say so too.
+- **Tests:** `oauth-queries` (refused until connected; the publisher's account in a live run; rollback by a second
+  admin switches it; the publisher's token gone → named in the error; a disabled publisher → nobody), `custom-auth`
+  (a form-step resource publishes once the admin signed in), e2e `releases.spec` (dialog line), `m9-done-when`
+  (**Runs as**).

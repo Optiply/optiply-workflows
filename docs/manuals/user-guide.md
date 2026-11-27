@@ -278,8 +278,10 @@ Salesforce, and BigQuery, REST, GraphQL, OpenAPI and SDK resources set to OAuth 
 
 - **One shared account:** someone with Edit clicks **Connect account** once, and every query uses that account.
 - **Each person's own account:** everyone connects their own account with **Connect your account**. Queries then run as
-  the person who runs them. **Workflows that use such a resource can't be published**, because a published workflow
-  has nobody behind it. Apps can use them: each person using the app connects their own account.
+  the person who runs them. A published workflow has nobody behind it, so **its live runs (webhooks, schedules,
+  apps and API calls) use the account of whoever published it**: connect your own account before you publish, and
+  the release shows **Runs as** your name. Apps can use them too: each person using the app connects their own
+  account.
 
 The account card shows **Connected**, **Needs reconnecting** or **Not connected**. If a provider stops accepting the
 connection, click **Reconnect**.
@@ -310,8 +312,8 @@ parameters use as `{{ auth.NAME }}`) and **Form**. Its settings show a **Sign-in
   that needs it shows **Sign in**, which opens a small form; apps do the same for the people using them. What you type
   is sent to sign in and never stored: only your sign-in is kept, for your own queries. The card shows **Your
   sign-in**, with **Sign in again** and **Sign out**; people with Edit also see how many people have signed in.
-  Workflows that run on their own can't use such a resource, because nobody is behind them (they can't be
-  released). After a few wrong passwords, signing in waits a little longer each time. Because the flow sends what
+  A published workflow that uses such a resource runs with the sign-in of whoever published it: sign in before you
+  publish. After a few wrong passwords, signing in waits a little longer each time. Because the flow sends what
   people type, **only admins** can set up or change its steps, base URL or allowed hosts; the sign-in form shows
   where your details are sent.
 
@@ -1525,9 +1527,15 @@ time zone). With **Skip this run**, a schedule is skipped while the previous run
 **My Python block fails with a network error, or can't call a function.**
 Python has no network access. Fetch the data with a resource query block first, then pass it on.
 
-**A workflow that uses a per-person account can't be published.**
-Resources set to "each person's own account" can't be used by published workflows. Ask the resource's owner for a
-resource with one shared account.
+**Publishing says to connect your account (or sign in) first.**
+The workflow uses a resource that signs in with each person's own account, such as the Optiply SDK. Its live runs
+will use your account, so connect it to that resource (in every environment you can use) and publish again. The
+release then shows **Runs as** your name. Whoever publishes or rolls back later becomes the one it runs as.
+
+**A live run says it uses someone's own account and they need to connect it.**
+The person the release runs as has disconnected, needs to reconnect, or no longer has access. They connect again, or
+someone else publishes the workflow so it runs as them. A release published before this feature, or deployed from
+Git, runs as nobody: publish it again.
 
 **The editor says "Offline: changes will sync".**
 Your connection dropped. Keep working; your changes are sent when it's back. If it says **Disconnected: reload**,
