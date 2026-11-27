@@ -375,6 +375,8 @@ describe('workflows', () => {
     expect(named.error.message).toMatch(
       /use the own account of .+, who made this release live: they need to connect their own account to this resource in this environment/,
     )
+    // Only the publisher can fix it: the UI offers the Connect button to them alone.
+    expect(named.error.details).toMatchObject({ publisher: true, publisherId: other.id })
     await connect(id, other.id, 'mailpub-admin2-2')
 
     // Publishing the unchanged draft re-vouches for the live release when it would run as someone else.

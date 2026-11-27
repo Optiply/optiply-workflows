@@ -14,6 +14,8 @@ export interface AuthRequired {
   environmentId: string
   /** `form`: a custom auth flow asking each person for their own details (the sign-in dialog), not OAuth's popup. */
   flow?: 'form'
+  /** A live run acting as the release's publisher (§2.47): only they can connect the account it needs. */
+  publisherId?: string
 }
 
 export function authRequired(
@@ -28,6 +30,9 @@ export function authRequired(
     resourceId: d.resourceId,
     environmentId: d.environmentId,
     ...((d as { flow?: unknown }).flow === 'form' && { flow: 'form' as const }),
+    ...(typeof (d as { publisherId?: unknown }).publisherId === 'string' && {
+      publisherId: (d as { publisherId: string }).publisherId,
+    }),
   }
 }
 

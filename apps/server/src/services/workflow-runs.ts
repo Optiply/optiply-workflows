@@ -478,7 +478,7 @@ function onPublishersBehalf(db: Db, credentials: CredentialSource, publisherId: 
     throw new ConnectorError(
       'auth_required',
       `This workflow's live runs use the own account of ${who}, who made this release live: they need to ${act} this resource${again} in this environment, or someone else makes it live again with theirs (Publish ▾ → Make live again). (${err.message})`,
-      { ...err.details, publisher: true },
+      { ...err.details, publisher: true, publisherId },
     )
   }
   return {
